@@ -1,0 +1,101 @@
+# runfile('Plotting Tools/NCP_error_eval_script.py', wdir='.')
+import pandas as pd
+import numpy as np
+import os
+import glob
+
+# ========================================
+# Custom Settings
+# ========================================
+data_dir = 'Cumulative Error Calculation'
+
+# Setpoints for each variable
+setpoints = {
+    "Cc": 5.180000845466388,
+    "T": 396.09999995862,
+    "Fa0": 80.2109824951133,
+    "mc": 298.43184792617524
+}
+
+# ========================================
+# Helper Functions
+# ========================================
+def trapezoidal_integral(x, y):
+    return np.trapezoid(y, x)
+
+def compute_setpoint_error(df, time_col, cols):
+    print(f"\n📌 Computing error with columns: {cols}")
+
+    # Skip the first row to avoid uninitialized MVs
+    df_trimmed = df.iloc[1:].copy()
+    print(f"🪓 Skipped first row, remaining rows: {len(df_trimmed)}")
+
+    # Extract data arrays
+    time_vals = df_trimmed[time_col].values
+    cc_vals = df_trimmed[cols['Cc']].values
+    t_vals = df_trimmed[cols['T']].values
+    fa0_vals = df_trimmed[cols['Fa0']].values
+    mc_vals = df_trimmed[cols['mc']].values
+
+    # Check for NaNs
+    for name, arr in zip(['Cc', 'T', 'Fa0', 'mc'], [cc_vals, t_vals, fa0_vals, mc_vals]):
+        print(f"   NaNs in {name}: {np.isnan(arr).any()}")
+
+    # Compute weighted squared error
+    cc_error = (cc_vals - setpoints["Cc"])**2
+    t_error = (t_vals - setpoints["T"])**2
+    fa0_error = (fa0_vals - setpoints["Fa0"])**2
+    mc_error = (mc_vals - setpoints["mc"])**2
+
+    total_error = cc_error + 1e-2 * t_error + 1e-2 * fa0_error + 1e-3 * mc_error
+
+    # Final check
+    if np.isnan(time_vals).any() or np.isnan(total_error).any():
+        raise ValueError("NaNs detected in trimmed time or error vectors.")
+
+    return trapezoidal_integral(time_vals, total_error)
+
+# ========================================
+# Main Loop Over Files
+# ========================================
+csv_files = sorted(glob.glob(os.path.join(data_dir, '*.csv')))
+error_results = {}
+
+for file in csv_files:
+    print(f"\n📂 Processing: {file}")
+    df = pd.read_csv(file)
+    df.columns = [col.strip() for col in df.columns]
+
+    print(f"📋 Columns: {df.columns.tolist()}")
+
+    # Detect time column
+    time_col = next((col for col in df.columns if 'time' in col.lower()), None)
+    if time_col is None:
+        print(f"⏱️ Skipping {file}: No time column found.")
+        continue
+
+    # Detect relevant variable columns
+    try:
+        cols = {
+            "Cc": next(c for c in df.columns if c.startswith("Cc[")),
+            "T": next(c for c in df.columns if c.startswith("T[")),
+            "Fa0": next(c for c in df.columns if c.startswith("Fa0[")),
+            "mc": next(c for c in df.columns if c.startswith("mc["))
+        }
+    except StopIteration:
+        print(f"⚠️ Skipping {file}: Missing required columns.")
+        continue
+
+    try:
+        error = compute_setpoint_error(df, time_col, cols)
+        error_results[os.path.basename(file)] = error
+        print(f"✅ {os.path.basename(file)}: Cumulative error = {error:.4f}")
+    except Exception as e:
+        print(f"❌ Error in {file}: {e}")
+
+# ========================================
+# Final Summary
+# ========================================
+print("\n📊 Cumulative Setpoint Errors:")
+for fname, err in error_results.items():
+    print(f" - {fname}: {err:.4f}")
