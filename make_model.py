@@ -11,7 +11,7 @@ from pyomo.core.expr.visitor import identify_variables
 from indexing_tools import _get_variable_key_for_data, _add_time_indexed_expression, _get_derivative_and_state_vars, _get_disc_eq_time_points
 
 
-# Solver Settings
+# IDAES Solver Settings
 use_idaes_solver_configuration_defaults()
 idaes.cfg.ipopt.options.linear_solver = "ma57" # "ma27"
 idaes.cfg.ipopt.options.OF_ma57_automatic_scaling = "yes"
