@@ -7,44 +7,39 @@ from matplotlib.ticker import MaxNLocator
 # ========================================
 # Custom Settings
 # ========================================
-data_dir = 'Plotting Tools/Distillation eNMPC Results 3'
-custom_run_labels = [r"$N=3,tracking$", r"$N=20,tracking$", r"$N-1=2,tracking$",
-                     r"$N=3,economic$", r"$N=20,economic$", r"$N-1=2,economic$"]
+data_dir = 'Plotting Tools'
+custom_run_labels = [r"$N=2$", r"$N=20$", r"$N=2/\infty$"]
 
 figures = [
     {
         "label": "Fig1",
-        "header_pattern": "x[1,*]",
+        "header_pattern": "Ca[*]",
         "xlabel": "Time (min)",
-        "ylabel": r"$(1-x_1)$",
+        "ylabel": r"$C_a\;(mol/L)$",
         "output_filename": "Summary_Fig1.png",
         "include_setpoint": True,
-        "setpoint_label": "Setpoint"
+        "setpoint_value": 0.5,
+        "setpoint_label": "Steady State Optimum"
     },
     {
         "label": "Fig2",
-        "header_pattern": "T[29,*]",
+        "header_pattern": "Cb[*]",
         "xlabel": "Time (min)",
-        "ylabel": r"$T_{29}\;(K)$",
+        "ylabel": r"$C_b\;(mol/L)$",
         "output_filename": "Summary_Fig2.png",
         "include_setpoint": True,
-        "setpoint_label": "Setpoint"
+        "setpoint_value": 0.5,
+        "setpoint_label": "Steady State Optimum"
     },
     {
         "label": "Fig3",
-        "header_pattern": "Qr[*]",
+        "header_pattern": "Fa0[*]",
         "xlabel": "Time (min)",
-        "ylabel": r"$Reboiler\;Heat\;Duty\;(MJ)$",
+        "ylabel": r"$F_{A0}\;(mol/min)$",
         "output_filename": "Summary_Fig3.png",
-        "include_setpoint": False
-    },
-    {
-        "label": "Fig4",
-        "header_pattern": "Rec[*]",
-        "xlabel": "Time (min)",
-        "ylabel": r"$Reflux\;Ratio$",
-        "output_filename": "Summary_Fig4.png",
-        "include_setpoint": False
+        "include_setpoint": True,
+        "setpoint_value": 12,
+        "setpoint_label": "Steady State Optimum"
     }
 ]
 
@@ -55,8 +50,9 @@ def match_columns(columns, pattern):
 csv_files = sorted(glob.glob(os.path.join(data_dir, '*.csv')))
 
 for fig in figures:
-    fig_obj, ax = plt.subplots(figsize=(7, 5))  # larger figure for better resolution
+    fig_obj, ax = plt.subplots(figsize=(7, 5))
     run_idx = 0
+    time_data = None  # store time for setpoint plotting
 
     for file in csv_files:
         df = pd.read_csv(file)
@@ -70,17 +66,22 @@ for fig in figures:
         if not matching_cols:
             continue
 
-        if fig.get("include_setpoint") and "Setpoint" in df.columns and run_idx == 0:
-            ax.plot(df[time_col], df["Setpoint"], '--', color='black', linewidth=2.5,
-                    label=fig["setpoint_label"])
+        if time_data is None:
+            time_data = df[time_col]  # use first valid file to get time axis
 
         for col in matching_cols:
             label = custom_run_labels[run_idx] if run_idx < len(custom_run_labels) else f"Run {run_idx + 1}"
-            linestyle = '--' if label == r"$N-1=2$" else '-'
+            linestyle = '--' if label == r"$N=2/\infty$" else '-'
             ax.plot(df[time_col], df[col], label=label, linestyle=linestyle, linewidth=2.5)
             run_idx += 1
 
-    if run_idx == 0:
+    # Plot custom setpoint line
+    if fig.get("include_setpoint") and time_data is not None:
+        setpoint_label = fig.get("setpoint_label", "Setpoint")
+        ax.plot(time_data, [fig["setpoint_value"]] * len(time_data),
+                '--', color='black', linewidth=2.5, label=setpoint_label)
+
+    if run_idx == 0 and not fig.get("include_setpoint"):
         print(f"⚠️  No data plotted for {fig['label']}!")
         continue
 

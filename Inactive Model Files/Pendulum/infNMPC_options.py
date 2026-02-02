@@ -44,6 +44,10 @@ class Options:
         self.custom_objective = False
         self.initialize_with_initial_data = True
         self.terminal_cost_riemann = False
+        self.remove_collocation = False
+        self.initialization_assist = False
+
+        self.input_suppression = False
 
         self.stage_cost_weights = [1, 1, 1]
         self.gamma = 0.0075

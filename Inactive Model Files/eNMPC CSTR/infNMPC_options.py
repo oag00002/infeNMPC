@@ -29,27 +29,32 @@ class Options:
     def __init__(self):
         # Simulation control
         self.num_horizons = 100
-        self.nfe_finite = 4
+        self.nfe_finite = 2
         self.ncp_finite = 1
         self.sampling_time = 1
 
         # Infinite horizon settings
         self.infinite_horizon = True
-        self.nfe_infinite = 4
+        self.nfe_infinite = 5
         self.ncp_infinite = 1
 
         # Solver and model options
-        self.tee_flag = False
+        self.tee_flag = True
         self.endpoint_constraints = False
         self.custom_objective = True
         self.initialize_with_initial_data = False
+        self.terminal_cost_riemann = False
+        self.remove_collocation = False
+        self.initialization_assist = False
+
+        self.input_suprression = False
 
         self.stage_cost_weights = [1, 1, 1/600]
         self.gamma = 0.001
         self.beta = 1
 
         # Display/Data Output options
-        self.live_plot = True
+        self.live_plot = False
         self.plot_end = True
         self.save_data = True
         self.save_figure = True

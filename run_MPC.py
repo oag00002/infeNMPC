@@ -4,7 +4,7 @@ import idaes
 from idaes.core.solvers import use_idaes_solver_configuration_defaults
 from infNMPC_options import _import_settings
 from tqdm import tqdm
-from data_save_and_plot import _finalize_live_plot, _setup_live_plot, _update_live_plot, _handle_mpc_results
+from data_save_and_plot import _finalize_live_plot, _setup_live_plot, _update_live_plot, _handle_mpc_results, _save_epsilon, _plot_lyap, _save_lyap_csv
 from indexing_tools import _add_time_indexed_expression
 import numpy as np
 from pyomo.contrib.mpc import ScalarData
@@ -13,7 +13,7 @@ import time
 from math import isclose
 from initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
 from controller_factory import _make_infinite_horizon_controller, _make_finite_horizon_controller
- 
+
 # Solver Settings
 use_idaes_solver_configuration_defaults()
 idaes.cfg.ipopt.options.linear_solver = "ma57" # "ma27"
@@ -131,6 +131,8 @@ def _mpc_loop(options):
     io_data_array = []
     time_series = []
     cpu_time = []
+    if options.custom_objective:
+        lyap = []
 
     # Get initial CV values only if they correspond to a differential state
     differential_state_keys = set()
@@ -224,6 +226,12 @@ def _mpc_loop(options):
             print("Terminal cost (now):", terminal_cost_now)
             print("First stage cost (prev):", first_stage_cost_prev)
             print("Penultimate stage cost (now):", penultimate_stage_cost_now)
+            print("Lyapunov Function Value:", pyo.value(controller.lyapunov))
+            lyap.append(pyo.value(controller.lyapunov))
+            if i == 0:
+                lyap.append(pyo.value(controller.lyapunov))
+
+            dlyap = lyap[i+1] - lyap[i]
 
             LHS = -(
                 terminal_cost_prev - terminal_cost_now - options.beta * penultimate_stage_cost_now
@@ -233,7 +241,16 @@ def _mpc_loop(options):
             #     assert LHS < 1, f"No ε ∈ [0,1) satisfies LHS ≤ ε; got LHS = {LHS}"
             print("")
             print(f"Min value of epsilon: {LHS}")
+            print(f"Change in Lyapunov Function Value: {dlyap}")
             print("")
+
+            custom_obj = terminal_cost_prev + first_stage_cost_prev - terminal_cost_now - penultimate_stage_cost_now
+
+            custom_obj *= -1
+
+            if options.save_data:
+                _save_epsilon(i, custom_obj, options)
+        
 
         if options.infinite_horizon:
             if options.endpoint_constraints:
@@ -333,6 +350,12 @@ def _mpc_loop(options):
                 controller = _remove_non_collocation_values_infinite(controller)
             else:
                 controller = _remove_non_collocation_values_finite(controller)
+
+    if options.custom_objective:
+        if options.plot_end:
+            _plot_lyap(lyap, options)
+        if options.save_data:
+            _save_lyap_csv(lyap, options)
 
     if options.live_plot and fig is not None:
         _finalize_live_plot(fig)

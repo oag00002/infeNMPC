@@ -47,6 +47,30 @@ def _make_infinite_horizon_controller(options, data=None):
                 terminal_cost = m.infinite_block.phi[m.infinite_block.time.prev(m.infinite_block.time.last())] * options.beta / options.sampling_time
 
             return stage_cost + terminal_cost
+        
+        c = options.stage_cost_weights
+        finite_elements = m.finite_block.time.get_finite_elements()
+        stage_cost = sum(sum(
+            c[i] * (_add_time_indexed_expression(m.finite_block, var_name, t) - m.finite_block.steady_state_values[var_name])**2
+            for i, var_name in enumerate(m.finite_block.stage_cost_index)
+        ) for t in finite_elements if t != m.finite_block.time.first())
+
+        tau_list = list(m.infinite_block.time.data())
+        tau_prev = 0
+        obj_expression_infinite = 0
+
+        for tau in tau_list:
+            if m.infinite_block.time.first() < tau < m.infinite_block.time.last():
+                tracking_cost = sum(
+                    c[i] * (_add_time_indexed_expression(m.infinite_block, var_name, tau) - m.infinite_block.steady_state_values[var_name])**2
+                    for i, var_name in enumerate(m.infinite_block.stage_cost_index)
+                )
+                obj_expression_infinite += tracking_cost * (tau - tau_prev) / (options.gamma / options.sampling_time * (1 - tau**2))
+                tau_prev = tau
+
+        terminal_cost = obj_expression_infinite * options.beta / options.sampling_time
+
+        m.lyapunov = pyo.Expression(expr=stage_cost + terminal_cost)
 
     elif options.terminal_cost_riemann:
         def objective_rule(m):

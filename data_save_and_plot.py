@@ -6,6 +6,28 @@ import numpy as np
 import re
 
 
+def _get_results_folder(options):
+    if options.infinite_horizon:
+        folder_path = os.path.join(
+            "Results",
+            "infinite_horizon_true",
+            f"finite_horizon_{options.nfe_finite}",
+            f"gamma_{options.gamma}",
+            f"beta_{options.beta}",
+            f"disturbance_{str(options.disturb_flag).lower()}"
+        )
+    else:
+        folder_path = os.path.join(
+            "Results",
+            "infinite_horizon_false",
+            f"finite_horizon_{options.nfe_finite}",
+            f"disturbance_{str(options.disturb_flag).lower()}"
+        )
+
+    os.makedirs(folder_path, exist_ok=True)
+    return folder_path
+
+
 def _save_sim_data_to_csv(sim_data, folder_path=None, filename='sim_data.csv'):
     """
     Save simulation data to a CSV file.
@@ -275,3 +297,57 @@ def _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, o
 
     if options.plot_end:
         plt.show()
+
+
+import csv
+
+def _save_epsilon(iteration, LHS, options):
+    folder_path = _get_results_folder(options)
+    csv_filename = os.path.join(folder_path, "LHS_values.csv")
+
+    # Create the file and header if it doesn't exist
+    if not os.path.exists(csv_filename):
+        with open(csv_filename, mode="w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["iteration", "LHS"])
+
+    # Append new LHS value
+    with open(csv_filename, mode="a", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow([iteration, LHS])
+
+    
+def _plot_lyap(lyap, options):
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import threading
+
+    lyap = np.asarray(lyap)[1:]
+    x = np.arange(1, len(lyap) + 1)
+
+    print("Plotting Lyapunov Function")
+
+    plt.figure()
+    plt.plot(x, lyap)
+    plt.xlabel("Number of Horizons")
+    plt.ylabel("Lyapunov Function Value")
+    plt.tight_layout()
+    plt.show(block=True)
+
+
+def _save_lyap_csv(lyap, options, filename="lyapunov.csv"):
+    import numpy as np
+    import pandas as pd
+    import os
+
+    folder_path = _get_results_folder(options)
+    full_path = os.path.join(folder_path, filename)
+
+    lyap = np.asarray(lyap)[1:]
+
+    df = pd.DataFrame({
+        "Horizon": np.arange(1, len(lyap) + 1),
+        "Lyapunov Value": lyap
+    })
+
+    df.to_csv(full_path, index=False)

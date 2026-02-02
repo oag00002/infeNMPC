@@ -212,8 +212,8 @@ def _make_infinite_horizon_model(m, options):
     if options.remove_collocation:
         m = _remove_non_collocation_values_infinite(m)
     else:
-        for mv in m.MV_index:
-            getattr(m,mv)[time0].fix()
+        for mv in m.infinite_block.MV_index:
+            getattr(m.infinite_block,mv)[time0].fix()
 
     for var in m.finite_block.state_vars:
         for index in var:

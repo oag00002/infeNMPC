@@ -1,42 +1,34 @@
 import pyomo.environ as pyo
 from pyomo.dae import DerivativeVar, ContinuousSet
 from pyomo.core.expr import exp
-import numpy as np
 
 
 def variables_initialize(m):
-    # ---- Time Units ----
-    m.time_display_name = ["Time (s)"]
-
     # ---- Variable Type Indexing ----
-    m.MV_index = pyo.Set(initialize=["F"])    # Manipulated variables
-    m.MV_display_names = ["F\;(N)"]
-    m.CV_index = pyo.Set(initialize=["theta", "x"])      # Controlled variables
-    m.CV_display_names = ["\theta", "x\;(m)"]
+    m.MV_index = pyo.Set(initialize=["Fa0"])    # Manipulated variables
+    m.CV_index = pyo.Set(initialize=["Ca", "Cb"])      # Controlled variables
+
+    # ---- Plot Display Names in markdown format ----
+    m.time_display_name = ["Time (h)"]
+    m.MV_display_names = ["F_{A0}\;(kmol/h)"]
+    m.CV_display_names = ["C_a\;(mol/L)", "C_b\;(mol/L)"]
 
     # ---- Differential State Variables ----
-    m.x = pyo.Var(m.time, initialize=0, bounds=(-1000, 1000))
-    m.x_dot = pyo.Var(m.time, initialize=0, bounds=(-100, 100))
-    m.theta = pyo.Var(m.time, initialize=np.radians(10), bounds=(np.radians(-180), np.radians(180)))
-    m.theta_dot = pyo.Var(m.time, initialize=0, bounds=(np.radians(-90), np.radians(90)))
-
-    # ---- Parameters (Disturbances) ----
-    m.b = pyo.Param(initialize=0.1, mutable=True)
+    m.Ca = pyo.Var(m.time, initialize=0.5, domain=pyo.NonNegativeReals)  # A concentration
+    m.Cb = pyo.Var(m.time, initialize=0.5, domain=pyo.NonNegativeReals)  # B concentration
 
     # ---- Manipulated Inputs ----
-    m.F = pyo.Var(m.time, initialize=0, bounds=(-5,5))
+    m.Fa0 = pyo.Var(m.time, initialize=12, bounds=(10,20))    # A feed rate
 
     # ---- Derivative Variables ----
-    m.dx = DerivativeVar(m.x, wrt=m.time, initialize=0)
-    m.dx_dot = DerivativeVar(m.x_dot, wrt=m.time, initialize=0)
-    m.dtheta = DerivativeVar(m.theta, wrt=m.time, initialize=0)
-    m.dtheta_dot = DerivativeVar(m.theta_dot, wrt=m.time, initialize=0)
+    m.dCadt = DerivativeVar(m.Ca, initialize=0, wrt=m.time)
+    m.dCbdt = DerivativeVar(m.Cb, initialize=0, wrt=m.time)
 
     # ---- Setpoints for CVs ----
-    m.setpoints = pyo.Param(m.CV_index, initialize={"theta": 0, "x": 0})
+    m.setpoints = pyo.Param(m.CV_index, initialize={"Ca": 0.5, "Cb": 0.5})
 
     # ---- Initial Values for MVs ----
-    m.initial_values = pyo.Param(m.CV_index, initialize={"theta": np.radians(10), "x": 0})
+    m.initial_values = pyo.Param(m.CV_index, initialize={"Ca": 0, "Cb": 0})
 
     return m
 
@@ -56,27 +48,25 @@ def equations_write(m):
     m : pyomo.ConcreteModel
         The model with all relevant variables and constraints defined.
     """
-    m_p = 0.2
-    l = 0.3
-    m_c = 0.5
-    k = 1 / 3
-    g = 9.8
+    # ---- Constants ----
+    V = 10
+    k = 1.2
+    caf = 1
 
-    def x_dyn_rule(m, t):
-        return m.dx[t] == m.x_dot[t]
-    def x_dot_dyn_rule(m, t):
-        return m.dx_dot[t] * (m_p * pyo.cos(m.theta[t])**2 - (1 + k) * (m_c + m_p)) == (m_p * g * pyo.sin(m.theta[t]) * pyo.cos(m.theta[t]) - (1 + k) * (m.F[t] + m_p * l * m.theta_dot[t]**2 * pyo.sin(m.theta[t]) - m.b * m.x_dot[t]))
-    def theta_dyn_rule(m, t):
-        return m.dtheta[t] == m.theta_dot[t]
-    def theta_dot_dyn_rule(m, t):
-        return m.dtheta_dot[t] * ((1 + k) * (m_c + m_p) * l - m_p * l * pyo.cos(m.theta[t])**2) == (m_c * g * pyo.sin(m.theta[t]) - pyo.cos(m.theta[t]) * (m.F[t] + m_p * l * m.theta_dot[t]**2 * pyo.sin(m.theta[t])))
+    def Ca_balance_rule(m, t):
+        return m.dCadt[t] == m.Fa0[t] / V * (caf - m.Ca[t]) - k*m.Ca[t]
+    def Cb_balance_rule(m, t):
+        return m.dCbdt[t] == m.Fa0[t] / V * (0 - m.Cb[t]) + k*m.Ca[t]
 
-    m.x_dyn = pyo.Constraint(m.time, rule=x_dyn_rule)
-    m.x_dot_dyn = pyo.Constraint(m.time, rule=x_dot_dyn_rule)
-    m.theta_dyn = pyo.Constraint(m.time, rule=theta_dyn_rule)
-    m.theta_dot_dyn = pyo.Constraint(m.time, rule=theta_dot_dyn_rule)
+    m.Ca_balance = pyo.Constraint(m.time, rule=Ca_balance_rule)
+    m.Cb_balance = pyo.Constraint(m.time, rule=Cb_balance_rule)
 
     return m
+
+
+def custom_objective(m, options):
+    stage_cost = lambda m, t: -m.Fa0[t]*(2*m.Cb[t] - 0.5)
+    return stage_cost
 
 
 # ---- Testing the Model ----
@@ -87,11 +77,11 @@ if __name__ == '__main__':
 
     print('Testing Model Equations')
     try:
-        m = variables_initialize(m)
         m = equations_write(m)
         print('Equation Writing Successful')
     except Exception as e:
         print(f'Equation Writing Failed: {e}')
+
     model_display_flag = True
     if model_display_flag:
         m.pprint()
