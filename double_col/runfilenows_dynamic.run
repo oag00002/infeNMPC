@@ -1,0 +1,107 @@
+###########################################################################
+# RUN FILE COLUMN 1 AND 2 #################################################
+###########################################################################
+
+reset ;
+
+#----------------------
+# Set parameters
+#---------------------
+
+#include nominal_point.dat;
+  
+#-----------
+# Options
+#-----------
+
+#option solver "C:/ampl/ipopt";
+option solver ipopt;
+#option ipopt_options 'halt_on_ampl_error yes';
+
+#option show_stats 1 ;
+#option display_precision 0;
+#option ipopt_options 'tol 1e-2' ;
+option ipopt_options 'linear_solver ma27';
+#option ipopt_options 'mu_init 1e-3';
+#option ipopt_options 'acceptable_obj_change_tol 1';
+
+### turn presolve off
+
+option presolve 0;
+
+### load model
+model column2_dynamic_soft.mod;
+data column2_dynamic.dat;
+
+include warm0.inc;
+#include multipliersread.inc;
+include varread0.inc;
+
+########
+# Solve
+########
+
+solve ;
+
+#########
+# Print
+##########
+
+include warmsave.inc;
+include varsave.inc;
+
+shell "rm multipliers.dat";
+print {i in 1.._ncons} _con[i]>>multipliers.dat;
+printf "\n" >>multipliers.dat;
+
+printf "Written data to warm startup on multipliers.dat file\n";
+
+close multipliers.dat;
+
+shell "rm control.dat";
+for {i in fe}{
+printf:"%e ",LT1[i]>>control.dat;
+printf:"%e ",VB1[i]>>control.dat;
+printf:"%e ",LT2[i]>>control.dat;
+printf:"%e ",VB2[i]>>control.dat;
+printf:"%e ",D1[i,1]>>control.dat;
+printf:"%e ",B1[i,1]>>control.dat;
+printf:"%e ",D2[i,1]>>control.dat;
+printf:"%e ",B2[i,1]>>control.dat;
+printf:"%e ",F[i]>>control.dat;
+printf:"%e ",qF[i]>>control.dat;
+printf "\n">>control.dat;
+}
+close "control.dat";
+
+shell "rm cost.dat";
+shell "rm penalty.dat";
+shell "rm regu.dat";
+for {i in fe}{
+printf:"%e ",cost[i]>>cost.dat;
+printf:"%e ",penalty[i]>>penalty.dat;
+printf:"%e ",regu[i]>>regu.dat;
+}
+close cost.dat;
+close penalty.dat;
+close regu.dat;
+
+shell "rm xA.dat";
+shell "rm xB.dat";
+shell "rm xC1.dat";
+shell "rm xC2.dat";
+for {i in fe}{
+printf:"%e ",x1_0[NT,1,i]>>xA.dat;
+printf:"%e ",x2_0[NT,2,i]>>xB.dat;
+printf:"%e ",x2_0[1,1,i]>>xC1.dat;
+printf:"%e ",x2_0[1,2,i]>>xC2.dat;
+}
+close xA.dat;
+close xB.dat;
+close xC1.dat;
+close xC2.dat;
+
+#display D1,B1,D2,B2;
+#display L1,V1,L2,V2;
+#display F_w,qF_w,D1_w,B1_w;
+#display zF;

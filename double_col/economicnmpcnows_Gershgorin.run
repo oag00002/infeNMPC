@@ -1,0 +1,320 @@
+# Code propylene distillation column NMPC
+# Gilvan - 2012
+
+reset                                    ;
+
+model economicnmpc_Gershgorin.mod                          ; 
+data economicnmpc_Gershgorin.dat                           ;
+ 
+#include warm.inc;
+#include multipliersread.inc;
+#include varread.inc;
+
+option solver ipopt                ;
+option presolve 0;
+option auxfiles 'rc';
+write gvars;
+
+#fix {q in fe}B[q]:=bset;
+#fix{q in fe}Psteam[q]:=psteam; 
+#minimize profit: 1;
+#solve;
+
+#unfix{q in fe}B[q];
+#unfix{q in fe}Psteam[q];
+#minimize profit1: sum{q in fe} (h[q]*sum{c in cp} (alpha*Wrebv[q,c]+beta*(0.001*0*((D[q] +eD[q])-480)^2 + (100000*x[Ntray,q,c]- 100000*xntrayref[q])^2+(100*x[1,q,c]- 100*x1ref[q])^2+1E8*0*(0.001*M[1,q,c]- 0.001*M1ref[q])^2+1E8*0*(0.001*M[Ntray,q,c]- 0.001*Mntrayref[q])^2))*omega[c,ncp]);
+#objective profit1;
+solve;
+
+
+include warmsave.inc;
+include varsave.inc;
+#include multiplierssave.inc;
+
+shell "open profits.dat";
+printf:"%e ",profit>>profits.dat;
+printf:"\n",profit>>profits.dat;
+close profits.dat;
+
+
+display x1eps;
+display xNtrayeps;
+
+shell "rm cost.dat";
+printf: "%e ",cost[1]>>cost.dat;
+close cost.dat;
+
+shell "rm control.dat";
+for {i in fe}{
+printf: "%e ",           D[i] >>control.dat;
+printf: "%e ",           B[i] >>control.dat;
+printf: "%e ",           Psteam[i]>>control.dat;
+printf: "%e ",           Reflux[i]>>control.dat;
+printf "\n" >>control.dat;
+}
+shell "rm M0.dat";
+shell "rm x0.dat";
+
+for {i in tray}{
+    for {j in fe}{
+        printf:"%e ",M_0[i,j]>>M0.dat;
+        printf:"%e ",x_0[i,j]>>x0.dat;
+    }
+
+    printf "\n">>M0.dat;
+    printf "\n">>x0.dat;   
+}
+
+close M0.dat;
+close x0.dat;
+
+#shell "rm Wrebv.dat";
+#printf:"%e ",Wrebv[1,2]>>Wrebv.dat;
+#close Wrebv.dat;
+
+
+shell "rm Q.dat";
+printf:"%e ",Qr[1,2]>>Q.dat;
+close Q.dat;
+
+##shell "rm V.dat";
+##for {i in fe}{
+##for {j in cp}{
+##printf:"%e ",V[Ntray-1,i,j]>>V.dat;
+##}
+##printf "\n">>V.dat;
+##}
+##close V.dat;
+
+shell "rm x.dat";
+for {t in tray}{
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",x[t,i,j]>>x.dat;
+}
+printf "\n">>x.dat;
+}}
+close x.dat;
+
+shell "rm M.dat";
+for {t in tray}{
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",M[t,i,j]>>M.dat;
+}
+printf "\n">>M.dat;
+}}
+close M.dat;
+
+shell "rm T.dat";
+for {t in tray}{
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",T[t,i,j]>>T.dat;
+}
+printf "\n">>T.dat;
+}}
+close T.dat;
+
+shell "rm L.dat";
+for {t in tray}{
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",L[t,i,j]>>L.dat;
+}
+printf "\n">>L.dat;
+}}
+close L.dat;
+
+shell "rm V.dat";
+for {t in tray diff{Ntray}}{
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",V[t,i,j]>>V.dat;
+}
+printf "\n">>V.dat;
+}}
+close V.dat;
+
+shell "rm Rec.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Rec[i,j]>>Rec.dat;
+}
+printf "\n">>Rec.dat;
+}
+close Rec.dat;
+
+shell "rm Qc.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Qc[i,j]>>Qc.dat;
+}
+printf "\n">>Qc.dat;
+}
+close Qc.dat;
+
+shell "rm Ts.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Ts[i,j]>>Ts.dat;
+}
+printf "\n">>Ts.dat;
+}
+close Ts.dat;
+
+shell "rm Pchest.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Pchest[i,j]>>Pchest.dat;
+}
+printf "\n">>Pchest.dat;
+}
+close Pchest.dat;
+
+shell "rm Tout.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Tout[i,j]>>Tout.dat;
+}
+printf "\n">>Tout.dat;
+}
+close Tout.dat;
+
+shell "rm Fs.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Fs[i,j]>>Fs.dat;
+}
+printf "\n">>Fs.dat;
+}
+close Fs.dat;
+
+shell "rm xout.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",xout[i,j]>>xout.dat;
+}
+printf "\n">>xout.dat;
+}
+close xout.dat;
+
+shell "rm yout.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",yout[i,j]>>yout.dat;
+}
+printf "\n">>yout.dat;
+}
+close yout.dat;
+
+shell "rm Wreb.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Wreb[i,j]>>Wreb.dat;
+}
+printf "\n">>Wreb.dat;
+}
+close Wreb.dat;
+
+shell "rm roreb.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",roreb[i,j]>>roreb.dat;
+}
+printf "\n">>roreb.dat;
+}
+close roreb.dat;
+
+shell "rm Wrebv.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Wrebv[i,j]>>Wrebv.dat;
+}
+printf "\n">>Wrebv.dat;
+}
+close Wrebv.dat;
+
+shell "rm rorebv.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",rorebv[i,j]>>rorebv.dat;
+}
+printf "\n">>rorebv.dat;
+}
+close rorebv.dat;
+
+shell "rm Wrebl.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Wrebl[i,j]>>Wrebl.dat;
+}
+printf "\n">>Wrebl.dat;
+}
+close Wrebl.dat;
+
+shell "rm rorebl.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",rorebl[i,j]>>rorebl.dat;
+}
+printf "\n">>rorebl.dat;
+}
+close rorebl.dat;
+
+shell "rm D.dat";
+for {i in fe}{
+printf:"%e ",D[i]>>D.dat;
+printf "\n">>D.dat;
+}
+close D.dat;
+
+shell "rm B.dat";
+for {i in fe}{
+printf:"%e ",B[i]>>B.dat;
+printf "\n">>B.dat;
+}
+close B.dat;
+
+shell "rm Psteam.dat";
+for {i in fe}{
+printf:"%e ",Psteam[i]>>Psteam.dat;
+printf "\n">>Psteam.dat;
+}
+close Psteam.dat;
+
+shell "rm Reflux.dat";
+for {i in fe}{
+printf:"%e ",Reflux[i]>>Reflux.dat;
+printf "\n">>Reflux.dat;
+}
+close Reflux.dat;
+
+shell "rm Qr.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",Qr[i,j]>>Qr.dat;
+}
+printf "\n">>Qr.dat;
+}
+close Qr.dat;
+
+shell "rm hlout.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",hlout[i,j]>>hlout.dat;
+}
+printf "\n">>hlout.dat;
+}
+close hlout.dat;
+
+shell "rm hvout.dat";
+for {i in fe}{
+for {j in cp}{
+printf:"%e ",hvout[i,j]>>hvout.dat;
+}
+printf "\n">>hvout.dat;
+}
+close hvout.dat;
+
+

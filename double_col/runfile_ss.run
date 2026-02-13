@@ -1,0 +1,67 @@
+###########################################################################
+# RUN FILE COLUMN 1 AND 2 #################################################
+###########################################################################
+
+reset ;
+
+#----------------------
+# Set parameters
+#---------------------
+
+#include nominal_point.dat;
+  
+#-----------
+# Options
+#-----------
+
+#option solver "C:/ampl/ipopt";
+option solver ipopt;
+#option show_stats 1 ;
+#option display_precision 0;
+
+### turn presolve off
+ #option presolve 0;
+
+### load model
+model column2_ss.mod;
+data column2_ss.dat;
+
+########
+# Solve
+########
+
+option presolve 0;
+option auxfiles 'rc';
+write gvars;
+
+solve ;
+
+shell "rm ss_states.dat";
+
+for {i in 1..NT}{
+for {f in 1..nfe}{
+printf:"%e ",x1_0[i,1,f]>>ss_states.dat;}
+}
+
+for {i in 1..NT}{
+for {f in 1..nfe}{
+printf:"%e ",x1_0[i,2,f]>>ss_states.dat;}
+}
+
+for {i in 1..NT}{
+for {f in 1..nfe}{
+printf:"%e ",M1_0[i,f]>>ss_states.dat;}}
+
+for {i in 1..NT}{
+for {f in 1..nfe}{
+printf:"%e ",x2_0[i,1,f]>>ss_states.dat;}
+}
+
+for {i in 1..NT}{
+for {f in 1..nfe}{
+printf:"%e ",x2_0[i,2,f]>>ss_states.dat;}
+}
+
+for {i in 1..NT}{
+for {f in 1..nfe}{
+printf:"%e ",M2_0[i,f]>>ss_states.dat;}}

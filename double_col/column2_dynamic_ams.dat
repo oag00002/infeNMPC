@@ -1,0 +1,183 @@
+param  omega:        1                  2                  3 :=        
+      1  0.19681547722366   0.39442431473909   0.37640306270047
+      2 -0.06553542585020   0.29207341166523   0.51248582618842
+      3  0.02377097434822  -0.04154875212600   0.11111111111111;
+
+read time<initial_data.dat;
+read nfe<initial_data.dat;
+read a<initial_data.dat;
+read b<initial_data.dat;
+read nominal_F<initial_data.dat;
+read nominal_pV<initial_data.dat;
+read nominal_qF<initial_data.dat;
+
+let {q in fe} h[q]:=time/nfe;
+
+read {i in 1..NT} x1set[i,1]<initial_data.dat;
+read {i in 1..NT} x1set[i,2]<initial_data.dat;
+read {i in 1..NT} M1set[i]<initial_data.dat;
+read {i in 1..NT} x2set[i,1]<initial_data.dat;
+read {i in 1..NT} x2set[i,2]<initial_data.dat;
+read {i in 1..NT} M2set[i]<initial_data.dat;
+
+param x1act{1..NT,1..2};
+param M1act{1..NT};
+param x2act{1..NT,1..2};
+param M2act{1..NT};
+
+read {i in 1..NT} x1act[i,1]<initial_data.dat;
+read {i in 1..NT} x1act[i,2]<initial_data.dat;
+read {i in 1..NT} M1act[i]<initial_data.dat;
+read {i in 1..NT} x2act[i,1]<initial_data.dat;
+read {i in 1..NT} x2act[i,2]<initial_data.dat;
+read {i in 1..NT} M2act[i]<initial_data.dat;
+
+read Fref<F.dat;
+read qFref<qF.dat;
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y1ref[i,j]<y1.dat;
+read y2ref[i,j]<y2.dat;
+read y_1_1ref[i,j]<y_1_1.dat;
+read y_1_2ref[i,j]<y_1_2.dat;
+read y_2_1ref[i,j]<y_2_1.dat;
+read y_2_2ref[i,j]<y_2_2.dat;
+}}
+
+for {i in 1..NT}{
+for {j in 1..2}{
+read x1ref[i,j]<x1.dat;
+read x2ref[i,j]<x2.dat;
+}}
+
+for {i in 1..NT}{
+read M1ref[i]<M1.dat;
+read M2ref[i]<M2.dat;
+read TC1ref[i]<TC1.dat;
+read TC2ref[i]<TC2.dat;
+}
+
+for {i in 2..NT}{
+read L1ref[i]<L1.dat;
+read L2ref[i]<L2.dat;
+}
+
+for {i in 1..NT-1}{
+read V1ref[i]<V1.dat;
+read V2ref[i]<V2.dat;
+}
+
+read D1ref<D1.dat;
+read B1ref<B1.dat;
+read D2ref<D2.dat;
+read B2ref<B2.dat;
+
+read pVref<pV.dat;
+read VB1ref<VB1.dat;
+read VB2ref<VB2.dat;
+read LT1ref<LT1.dat;
+read LT2ref<LT2.dat;
+
+read F_w<newd.dat;
+read qF_w<newd.dat;
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y1_w[i,j]<newd.dat;}}
+
+for {i in 1..NT}{
+for {j in 1..2}{
+read x1_w[i,j]<newd.dat;}}
+
+for {i in 2..NT-1}{
+read M1_w[i]<newd.dat;}
+
+for {i in 1..NT-1}{
+read V1_w[i]<newd.dat;}
+
+for {i in 2..NT}{
+read L1_w[i]<newd.dat;}
+
+read D1_w<newd.dat;
+read B1_w<newd.dat;
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y_1_1_w[i,j]<newd.dat;}}
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y_1_2_w[i,j]<newd.dat;}}
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y2_w[i,j]<newd.dat;}}
+
+for {i in 1..NT}{
+for {j in 1..2}{
+read x2_w[i,j]<newd.dat;}}
+
+for {i in 2..NT-1}{
+read M2_w[i]<newd.dat;}
+
+for {i in 1..NT-1}{
+read V2_w[i]<newd.dat;}
+
+for {i in 2..NT}{
+read L2_w[i]<newd.dat;}
+
+read D2_w<newd.dat;
+read B2_w<newd.dat;
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y_2_1_w[i,j]<newd.dat;}}
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y_2_2_w[i,j]<newd.dat;}}
+
+read pV_w<newd.dat;
+read VB1_w<newd.dat;
+read VB2_w<newd.dat;
+read LT1_w<newd.dat;
+read M1_w[1]<newd.dat;
+read M1_w[41]<newd.dat;
+
+for {i in 1..NT}{
+read TC1_w[i]<newd.dat;}
+
+read LT2_w<newd.dat;
+read M2_w[1]<newd.dat;
+read M2_w[41]<newd.dat;
+
+for {i in 1..NT}{
+read TC2_w[i]<newd.dat;}
+
+
+for {i in 1..NT}{
+let x1_nom[i,1].sens_state_0:=i;
+let x1_nom[i,2].sens_state_0:=i+NT;
+let M1_nom[i].sens_state_0:=i+2*NT;
+let x2_nom[i,1].sens_state_0:=i+3*NT;
+let x2_nom[i,2].sens_state_0:=i+4*NT;
+let M2_nom[i].sens_state_0:=i+5*NT;
+}
+
+for {i in 1..NT}{
+let x1_nom[i,1].sens_state_1:=i;
+let x1_nom[i,2].sens_state_1:=i+NT;
+let M1_nom[i].sens_state_1:=i+2*NT;
+let x2_nom[i,1].sens_state_1:=i+3*NT;
+let x2_nom[i,2].sens_state_1:=i+4*NT;
+let M2_nom[i].sens_state_1:=i+5*NT;
+}
+
+let {i in 1..NT,j in 1..2}x1_init_constr[i,j].sens_init_constr:=1;
+let {i in 1..NT}M1_init_constr[i].sens_init_constr:=1;
+let {i in 1..NT,j in 1..2}x2_init_constr[i,j].sens_init_constr:=1;
+let {i in 1..NT}M2_init_constr[i].sens_init_constr:=1;
+
+let {i in 1..NT, j in 1..2}x1_nom[i,j].sens_state_value_1:=x1act[i,j];
+let {i in 1..NT}M1_nom[i].sens_state_value_1:=M1act[i];
+let {i in 1..NT, j in 1..2}x2_nom[i,j].sens_state_value_1:=x2act[i,j];
+let {i in 1..NT}M2_nom[i].sens_state_value_1:=M2act[i];

@@ -1,0 +1,217 @@
+#param  omega:        1                  2                  3 :=        
+#      1  0.19681547722366   0.39442431473909   0.37640306270047
+#      2 -0.06553542585020   0.29207341166523   0.51248582618842
+#      3  0.02377097434822  -0.04154875212600   0.11111111111111;
+
+param  omega: 1   2 :=          
+      1  0.4167   0.75   
+     2 -0.0833   0.25  ; 
+
+read Ntray< initial_data.dat;
+read feedtray< initial_data.dat;
+read time< initial_data.dat;
+read nfe< initial_data.dat;
+read alpha< initial_data.dat;
+read beta< initial_data.dat;
+read vlow< initial_data.dat;
+
+let{q in fe, c in cp} Rec[q,c]:= 15;
+let{q in fe} h[q] := time/nfe;
+#let {q in 1..4}h[q]:=1;
+#let {q in 5..nfe}h[q]:=2;
+let Eff:=0.61;
+#let Eff:=1;
+#let Eff:=0.8;
+
+let{i in tray} Llow[i]:=(if i==1 then 80 else 0);
+#let{i in tray} Lup[i]:=(if i==1 then 380 else 12000);
+let{i in tray}Lup[i]:=12000;
+#let{i in tray} xlow[i]:=(if i==Ntray then 0.99 else 0);
+let{i in tray} xlow[i]:=0;
+let{i in tray} xup[i]:=1;
+let{i in tray} Vlow[i]:=(if i==Ntray-1 then vlow else 0);
+let{i in tray} Vup[i]:=12000;
+
+let kFlow:= 6.8; #50ton/h from design value 3.5
+let kQr:= 0.62;
+let Atotal:= 478; #area reboiler in m^2, each reboiler 239m^2
+let Uheat:= 0.38; 
+let kwreb:=80;
+
+let Ttop_des := 318.78; let Tbottom_des := 327.94;
+
+#Reference Temperature to calculate the Enthalpy
+let Tref := 230; 
+
+#Source: properties of gases and liquids Yaw, file: CP Gas Liq Propano Propeno.doc and Matlab file entalpiavapor3.m
+#Cp =A+B*T+C*T^2+D*T^3+E*T^4 unit= J/(mol*K)
+#Avm= vapour coeff
+#Alm= liquid coeff
+#A=Avm, B=Bvm, C=Cvm, D=Dvm, E=Evm
+#T ref 230 K
+#m-propylene; n-propane
+
+let Avm:=3.1298E+01;let Bvm:=7.2449E-02;let Cvm:=1.9481E-04 ;let Dvm:=-2.158E-07 ;let Evm:=6.2974E-11;
+let Avn:=2.8277E+01;let Bvn:=1.1600E-01;let Cvn:=1.9597E-04;let Dvn:=-2.327E-07;let Evn:=6.8669E-11;
+
+#Density
+let Adm:=0.2331; let Bdm:=0.2752; let Ndm:=0.3025;
+let Adn:=0.2215;let Bdn:=0.2774; let Ndn:=0.287;
+
+#Massa Molar
+let MWm:=42.081; let MWn:=44.097; 
+
+let Alm:=54.718; let Blm:=3.4512E-01; let Clm:=-1.6315E-03; let Dlm:=3.8755E-06;
+let Aln:=59.642; let Bln:=3.2831E-01; let Cln:=-1.5377E-03; let Dln:=3.6539E-06;
+
+#vapourization heat kJ/kmol
+let h0m:=18267;
+let h0n:=18897;
+
+
+let r:= 8.3147;
+let gm := 0.142; let Tkm := 364.9; let Pkm := 46;
+let gn := 0.152; let Tkn := 369.83; let Pkn := 42.48;
+
+#pression top 19kgf/cm2 bottom 19,9kgf/cm2 feed 19.7kgf/cm2
+#these unit pression were changed to bar
+
+let p[Ntray]:= 15.7; let pstrip:=16.8; let prect := (pstrip-p[Ntray])/Ntray ;
+let{i in tray diff{Ntray}} p[i] := p[Ntray] + prect*(Ntray-i);
+let pout:=p[1]+0.05; 
+#equation 1 from properties of gases and liquids, 1987- reid, prausnitz appendix A , the eq was simplified, the coefficients were adjusted with data from Perry table2-297 electronic version, result is in bar
+
+
+let CapAm := 9.9280; let CapBm := 2229.6364; 
+let CapAn := 9.8844; let CapBn := 2274.4804; 
+
+
+let xf := 0.68; 
+let hf := 13620.52;
+
+
+
+
+
+# specify the initial condition
+
+let{i in 2..feedtray-1, q in fe, c in cp} L[i,q,c] := 8961; 
+let{i in feedtray..Ntray, q in fe, c in cp} L[i,q,c] := 8766;  
+let{q in fe, c in cp} L[1,q,c] := 220.8729598;
+let{i in tray diff{Ntray}, q in fe, c in cp} V[i,q,c] := 9066;
+let{i in tray,q in fe, c in cp} T[i,q,c] := -((Tbottom_des -Ttop_des )/Ntray)*i+Tbottom_des;
+let{i in tray,q in fe, c in cp} x[i,q,c] := ((0.996)/Ntray)*i-0.001;
+let{i in tray diff{1,Ntray}, q in fe, c in cp} M[i,q,c]:= 30.925;
+let{q in fe, c in cp} M[1,q,c] := 300; 
+let{q in fe, c in cp} M[Ntray,q,c] := 300; 
+#let{q in fe, c in cp} Qr[q,c] := 80;
+let{q in fe, c in cp} D[q] := 400;
+let{q in fe, c in cp} Qc[q,c] := 85;
+let{q in fe, c in cp} Tout[q,c] := 340;
+let{q in fe, c in cp} roreb[q,c] := 5;
+let{q in fe, c in cp} rorebm[q,c] := 250;
+let{q in fe, c in cp} rorebm[q,c] := 250;
+let{q in fe, c in cp} Wreb[q,c] := 36000;
+let{q in fe, c in cp} Wrebl[q,c] := 20000;
+let{q in fe, c in cp} Psteam[q] := 360;
+
+for {i in 1..965}{read dd[i]<initial_data.dat;}
+
+for {i in tray}{
+for {q in fe}{
+read Mref[i,q]<initial_data.dat;
+}}
+for {i in tray}{
+for {q in fe}{
+read xref[i,q]<initial_data.dat;
+}}
+
+#read {q in fe} x1ref[q]<initial_data.dat;
+#read {q in fe} xntrayref[q]<initial_data.dat;
+#read {q in fe} M1ref[q]<initial_data.dat;
+#read {q in fe} Mntrayref[q]<initial_data.dat;
+
+#let{q in fe} x1ref[q]:=xref[1,q];
+#let {q in fe} xntrayref[q]:=xref[Ntray,q];
+
+read {q in fe} Dref[q]<initial_data.dat;
+read {q in fe} Bref[q]<initial_data.dat;
+read {q in fe} Psteamref[q]<initial_data.dat;
+read {q in fe} Refluxref[q]<initial_data.dat;
+ 
+for {i in tray}{
+for {q in fe}{
+read yref[i,q]<initial_data.dat;
+}}
+
+for {i in tray}{
+for {q in fe}{
+read Trefe[i,q]<initial_data.dat;
+}}
+for {i in tray}{
+for {q in fe}{
+read Lref[i,q]<initial_data.dat;
+}
+}
+for {i in tray diff {Ntray}}{
+for {q in fe}{
+read Vref[i,q]<initial_data.dat;
+}
+}
+read {q in fe} Recref[q]<initial_data.dat;
+read {q in fe} Qcref[q]<initial_data.dat;
+read {q in fe} Tsref[q]<initial_data.dat;
+read {q in fe} Pchestref[q]<initial_data.dat;
+read {q in fe} Toutref[q]<initial_data.dat;
+read {q in fe} Fsref[q]<initial_data.dat;
+read {q in fe} xoutref[q]<initial_data.dat;
+read {q in fe} youtref[q]<initial_data.dat;
+read {q in fe} Wrebref[q]<initial_data.dat;
+read {q in fe} rorebref[q]<initial_data.dat;
+read {q in fe} Wreblref[q]<initial_data.dat;
+read {q in fe} Wrebvref[q]<initial_data.dat;
+read {q in fe} rorebmref[q]<initial_data.dat;
+read {q in fe} Qrref[q]<initial_data.dat;
+
+#Order is important, must be the same as outputnmpc and icsim order.
+read {i in tray} Mset[i]<initial_data.dat;
+read {i in tray} xset[i]<initial_data.dat;
+
+
+read {q in fe} feednmpc[q] <initial_data.dat;
+
+close feednmpc.dat;
+
+param dset;
+param bset;
+read dset<initial_data.dat;
+read bset<initial_data.dat;
+let {q in fe} D[q]:=dset;
+let {q in fe} B[q]:=bset;
+
+param psteam;
+param reflux;
+read psteam<initial_data.dat;
+read reflux<initial_data.dat;
+let {q in fe} Psteam[q]:=psteam;
+let {q in fe} Reflux[q]:=reflux;
+
+
+
+#let{i in tray, q in fe, c in cp} x[i,q,c]  := xset[i];
+#let{i in tray, q in fe, c in cp} M[i,q,c]  := Mset[i];
+
+close initial_data.dat;
+
+
+#fix{i in fe, j in cp} x1eps[i,j]:=0;
+#fix{i in fe, j in cp} xNtrayeps[i,j]:=0;
+
+##Refluxfe{q in fe diff{1,2,3}} : Reflux[3] = Reflux[q];
+
+##Psteamfe{q in fe diff{1,2,3}} : Psteam[3] = Psteam[q];
+
+##Dfe{q in fe diff{1,2,3}} : D[3] = D[q];
+
+
+

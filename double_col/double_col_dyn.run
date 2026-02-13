@@ -1,0 +1,536 @@
+reset;
+param start_time symbolic;
+param end_time symbolic;
+let start_time := ctime();
+option solver ipopt, randseed 7;
+#option ipopt_options "halt_on_ampl_error yes";
+option ipopt_options "tol=1e-6 max_iter=10000" ;
+model column2_dynamic_soft.mod;
+data column2_dynamic.dat;
+let nominal_zF[1] := 0.4 ;#
+let nominal_zF[2] := 0.2 ;#
+let nominal_zF[3] := 0.4 ;
+
+let sig_val[1]:=.99;
+let sig_val[2]:=.9;
+let sig_val[3]:=.7;
+let sig_val[4]:=.5;
+let sig_val[5]:=.3;
+let sig_val[6]:=.1;
+let sig_val[7]:=.01;
+
+for {j in 1..NT}{
+let x1_init[j,1] := x1set[j,1];
+let x1_init[j,2] := x1set[j,2];
+let M1_init[j] := M1set[j] ; 
+let x2_init[j,1] := x2set[j,1];
+let x2_init[j,2] := x2set[j,2];
+let M2_init[j] := M2set[j] ; 
+};
+
+#for {sig_loop in 1..7}{
+#let sigma:=sig_val[sig_loop];
+#let sigma:=.99;
+
+for {j in 1..NT}{
+let  x1set[j,1] :=x1_init[j,1]  ;
+let  x1set[j,2] :=x1_init[j,2]  ;
+let   M1set[j] := M1_init[j]; 
+let  x2set[j,1]:=x2_init[j,1]  ;
+let   x2set[j,2]:= x2_init[j,2];
+let   M2set[j]:= M2_init[j]; 
+};
+
+
+for {j in 1..NT}{
+let state_act[j,0] := x1set[j,1];
+let state_act[NT+j,0] := x1set[j,2];
+let state_act[2*NT+j,0] := M1set[j] ; 
+let state_act[3*NT+j,0] := x2set[j,1];
+let state_act[4*NT+j,0] := x2set[j,2];
+let state_act[5*NT+j,0] := M2set[j] ; 
+};
+let normx[0] := (sum {i in 1..NT}(sum{j in 1..2}((x1set[i,j]-x1ref[i,j])^2 +(x2set[i,j]-x2ref[i,j])^2 )) + sum {i in 1..NT}( (M1set[i]-M1ref[i])^2 + (M2set[i]-M2ref[i])^2))^(.5) ; 
+let vtr[-1]:=99999;
+let ltr[-1]:=0 ;
+
+#x_0=x_ss
+#for {i in 1..NT}{
+#let M1set[i]:=M1ref[i];
+#	let M2set[i]:=M2ref[i];
+#	for {j in 1..2}{
+#		let x1set[i,j]:=x1ref[i,j];
+#		let x2set[i,j]:=x2ref[i,j];
+#	};
+#};
+
+#Define weights
+let {i in 1..NT-1} y1_w[i,1]:= weight[i] ;
+let {i in 1..NT-1} y1_w[i,2]:= weight[40+i] ; 
+let {i in 1..NT-1} y2_w[i,1] := weight[80+i] ;
+let {i in 1..NT-1} y2_w[i,2] := weight[120+i] ;
+let {i in 1..NT} x1_w[i,1] := weight[160+i] ;
+let {i in 1..NT} x1_w[i,2] := weight[201+i] ;
+let {i in 1..NT} x2_w[i,1] := weight[242+i] ;
+let {i in 1..NT} x2_w[i,2] := weight[283+i] ;
+let {i in 1..NT} M1_w[i] := weight[324+i] ;
+let {i in 1..NT} M2_w[i] := weight[365+i] ;
+let {i in 1..NT-1} V1_w[i] := weight[406+i] ;
+let {i in 1..NT-1} V2_w[i] := weight[446+i] ;
+let {i in 2..NT} L1_w[i] := weight[486+i] ;
+let {i in 2..NT} L2_w[i] := weight[526+i] ;
+let D1_w := weight[567] ;
+let B1_w := weight[568] ;
+let D2_w := weight[569] ;
+let B2_w := weight[570];
+let {i in 1..NT-1} y_1_1_w[i,1] := weight[571+i] ; 
+let {i in 1..NT-1} y_1_1_w[i,2] := weight[611+i] ; 
+let {i in 1..NT-1} y_1_2_w[i,1] := weight[651+i] ; 
+let {i in 1..NT-1} y_1_2_w[i,2] := weight[691+i] ; 
+let {i in 1..NT-1} y_2_1_w[i,1] := weight[731+i] ; 
+let {i in 1..NT-1} y_2_1_w[i,2] := weight[771+i] ; 
+let {i in 1..NT-1} y_2_2_w[i,1] := weight[811+i] ; 
+let {i in 1..NT-1} y_2_2_w[i,2] := weight[851+i] ; 
+let pV_w := weight[892] ;
+let VB1_w:=weight[893];
+let VB2_w := weight[894];
+let LT1_w := weight[895] ;
+let LT2_w := weight[896];
+let {i in 1..NT} TC1_w[i] := weight[897+i] ;
+let {i in 1..NT} TC2_w[i] := weight[938+i] ;
+
+
+#Initialize first NLP
+for {k in fe}{
+	let F[k] := nominal_F;
+	let qF[k]:= nominal_qF;
+	let {i in 1..3} zF[k,i] :=nominal_zF[i];
+	let D1[k]:=D1ref;
+	let B1[k]:=B1ref;
+	let LT1[k]:=LT1ref;
+	let VB1[k]:=VB1ref;
+	let D2[k]:=D2ref;
+	let B2[k]:=B2ref;
+	let LT2[k]:=LT2ref;
+	let VB2[k]:=VB2ref;
+};
+for {k in 0..nfe}{
+	for {j in 1..NT}{
+		for {p in 1..2}{
+			let x1_0[j,p,k] :=x1set[j,p]+ (x1ref[j,p] - x1set[j,p])*k/nfe ;
+			let x2_0[j,p,k] :=x2set[j,p]+ (x2ref[j,p] - x2set[j,p])*k/nfe ; 
+        };
+       let M1_0[j,k] :=M1set[j]+ (M1ref[j] - M1set[j])*k/nfe ;
+       let M2_0[j,k] :=M2set[j]+ (M2ref[j] - M2set[j])*k/nfe ;       
+    };   
+};       
+       
+for {i in 1..NT}{       
+       	 for  {f in fe}{
+       	    	for {j in 1..2}{
+       	   		 let x1[i,j,f,3] := x1_0[i,j,f+1] ; 
+       	  		  let x2[i,j,f,3] := x2_0[i,j,f+1] ; 
+       		    };
+       	let M1[i,f,3] := M1_0[i,f+1] ; 
+       	  let M2[i,f,3] := M2_0[i,f+1] ; 
+       	 };
+  };     	    
+       	     
+       
+ for {i in 1..NT}{
+ 	for {f in fe}{
+ 		for {c in 1..2}{
+ 			for {j in 1..2}{
+            	let x1[i,j,f,c] := x1_0[i,j,f] + (x1[i,j,f,3] - x1_0[i,j,f])*c/3 ; 
+            	let x2[i,j,f,c] := x2_0[i,j,f] + (x2[i,j,f,3] - x2_0[i,j,f])*c/3 ; 
+            	};
+          let M1[i,f,c] := M1_0[i,f] + (M1[i,f,3] - M1_0[i,f])*c/3 ; 
+          let M2[i,f,c] := M2_0[i,f] + (M2[i,f,3] - M2_0[i,f])*c/3 ; 
+            };
+            };
+            };
+            
+for { i in 1..NT-1}{
+	for {j in 1..2}{
+		for {f in fe}{
+			for {c in cp}{
+				let y_1_1[i,j,f,c] := x1[i,j,f,c]*m_alpha[j,j] ;            
+                let y_1_2[i,j,f,c] := ((x1[i,1,f,c]*(alpha[1]-1)+x1[i,2,f,c]*(alpha[2]-1))+1) ;     
+                  let y1[i,j,f,c] := y_1_1[i,j,f,c]/y_1_2[i,j,f,c]  ;
+                  let y_2_1[i,j,f,c] := x2[i,j,f,c]*m_alpha[j,j] ;            
+                let y_2_2[i,j,f,c] := ((x2[i,1,f,c]*(alpha[1]-1)+x2[i,2,f,c]*(alpha[2]-1))+1) ;     
+                  let y2[i,j,f,c] := y_2_1[i,j,f,c]/y_2_2[i,j,f,c]  ;
+                  };
+                  };
+                  };
+                  };
+                  
+for {i in 1..NF-1}{
+	for {f in fe}{
+		let V1[i,f] := VB1[f] ;
+		 let V2[i,f] := VB2[f] ;
+		 };
+		 }; 
+		
+		
+		
+for {i in NF..NT-1}{
+	for {f in fe}{		
+          let V1[i,f] := VB1[f] + (1-qF[f])*F[f] ;
+          let V2[i,f] := VB2[f] ; 
+          };
+          };
+          
+	for {f in fe}{
+		for {c in cp}{
+			for {i in 2..NF}{
+			let L1[i,f,c] := Kbf*( (M1[i,f,c] - Muw+sqrt((M1[i,f,c] - Muw)^2+10^(-8)))/2    )^1.5 ;
+				let L2[i,f,c] := Kbf*( (M2[i,f,c] - Muw+sqrt((M2[i,f,c] - Muw)^2+10^(-8)))/2    )^1.5 ;
+			};
+			for {i in NF+1..NT-1}{          
+            	let L1[i,f,c] := Kuf*( (M1[i,f,c] - Muw+sqrt((M1[i,f,c] - Muw)^2+10^(-8)))/2 )^1.5 ;
+            	     	let L2[i,f,c] := Kuf*( (M2[i,f,c] - Muw+sqrt((M2[i,f,c] - Muw)^2+10^(-8)))/2 )^1.5 ;
+            };
+              let L1[NT,f,c] := LT1[f]; 
+                let L2[NT,f,c] := LT2[f]; 
+          };
+   };       
+   
+   	for {f in fe}{
+		for {i in 2..NF}{
+			let L1_0[i,f] := Kbf*( (M1_0[i,f] - Muw+sqrt((M1_0[i,f] - Muw)^2+10^(-8)))/2    )^1.5 ;
+				let L2_0[i,f] := Kbf*( (M2_0[i,f] - Muw+sqrt((M2_0[i,f] - Muw)^2+10^(-8)))/2    )^1.5 ;
+			};
+			for {i in NF+1..NT-1}{          
+            	let L1_0[i,f] := Kuf*( (M1_0[i,f] - Muw+sqrt((M1_0[i,f] - Muw)^2+10^(-8)))/2 )^1.5 ;
+            	     	let L2_0[i,f] := Kuf*( (M2_0[i,f] - Muw+sqrt((M2_0[i,f] - Muw)^2+10^(-8)))/2 )^1.5 ;
+            };
+              let L1_0[NT,f] := LT1[f]; 
+                let L2_0[NT,f] := LT2[f]; 
+   };  	
+
+for {i in 1..NT}{
+	for {f in fe}{
+		let TC1[i,f] := x1_0[i,1,f]*353.3 + x1_0[i,2,f]*383.8 + (1-x1_0[i,1,f]-x1_0[i,2,f])*411.5 ;
+        let TC2[i,f] := x2_0[i,1,f]*353.3 + x2_0[i,2,f]*383.8 + (1-x2_0[i,1,f]-x2_0[i,2,f])*411.5 ;  	
+};
+};      
+
+for {f in fe}{
+	for {c in cp}{
+let M2dot[1,f,c]:=L2[2,f,c] - V2[1,f] - B2[f];
+let M1dot[1,f,c]:=L1[2,f,c] - V1[1,f] - B1[f];
+ let M2dot[NT,f,c]:=V2[NT-1,f] - LT2[f] - D2[f];
+   let M1dot[NT,f,c]:=V1[NT-1,f] - LT1[f] - D1[f];
+		for {i in NF+1..NT-1}{
+			let M1dot[i,f,c]:=L1[i+1,f,c] - L1[i,f,c] + V1[i-1,f] - V1[i,f];
+			 let M2dot[i,f,c]:=L2[i+1,f,c] - L2[i,f,c] + V2[i-1,f] - V2[i,f]; 
+		};
+		for {i in 2..NF-1}{
+				let M1dot[i,f,c] :=L1[i+1,f,c] - L1[i,f,c] + V1[i-1,f] - V1[i,f];
+				 let M2dot[i,f,c]:=L2[i+1,f,c] - L2[i,f,c] + V2[i-1,f] - V2[i,f];
+		};
+		let M2dot[NF,f,c]:=L2[NF+1,f,c] - L2[NF,f,c] + V2[NF-1,f] - V2[NF,f] + B1[f];
+			let M1dot[NF,f,c]:=L1[NF+1,f,c] - L1[NF,f,c] + V1[NF-1,f] - V1[NF,f] + F[f];
+		for {j in 1..2}{
+			let Mx1dot[1,j,f,c]:=L1[2,f,c]*x1[2,j,f,c] - V1[1,f]*y1[1,j,f,c] - B1[f]*x1[1,j,f,c];
+			let M1dot[NT,f,c]:=V1[NT-1,f] - LT1[f] - D1[f];			
+			 let Mx1dot[NT,j,f,c]:=V1[NT-1,f]*y1[NT-1,j,f,c] - L1[NT,f,c]*x1[NT,j,f,c] - D1[f]*x1[NT,j,f,c];
+			 let Mx2dot[1,j,f,c]:=L2[2,f,c]*x2[2,j,f,c] - V2[1,f]*y2[1,j,f,c] - B2[f]*x2[1,j,f,c];
+			   let Mx2dot[NT,j,f,c]:=V2[NT-1,f]*y2[NT-1,j,f,c] - L2[NT,f,c]*x2[NT,j,f,c] - D2[f]*x2[NT,j,f,c];
+			for {i in 2..NF-1}{
+				let Mx2dot[i,j,f,c]:=L2[i+1,f,c]*x2[i+1,j,f,c] - L2[i,f,c]*x2[i,j,f,c] + V2[i-1,f]*y2[i-1,j,f,c] - V2[i,f]*y2[i,j,f,c];
+				let Mx1dot[i,j,f,c]:=L1[i+1,f,c]*x1[i+1,j,f,c] - L1[i,f,c]*x1[i,j,f,c] + V1[i-1,f]*y1[i-1,j,f,c] - V1[i,f]*y1[i,j,f,c];
+			};
+			for {i in NF+1..NT-1}{
+				let Mx2dot[i,j,f,c]:=L2[i+1,f,c]*x2[i+1,j,f,c] - L2[i,f,c]*x2[i,j,f,c] + V2[i-1,f]*y2[i-1,j,f,c] - V2[i,f]*y2[i,j,f,c];
+				let Mx1dot[i,j,f,c]:=L1[i+1,f,c]*x1[i+1,j,f,c] - L1[i,f,c]*x1[i,j,f,c] + V1[i-1,f]*y1[i-1,j,f,c] - V1[i,f]*y1[i,j,f,c];
+			};
+    let Mx2dot[NF,j,f,c]:=L2[NF+1,f,c]*x2[NF+1,j,f,c] - L2[NF,f,c]*x2[NF,j,f,c] + V2[NF-1,f]*y2[NF-1,j,f,c] - V2[NF,f]*y2[NF,j,f,c] + B1[f]*x1[1,j,f,c];
+let Mx1dot[NF,j,f,c]:=L1[NF+1,f,c]*x1[NF+1,j,f,c] - L1[NF,f,c]*x1[NF,j,f,c] + V1[NF-1,f]*y1[NF-1,j,f,c] - V1[NF,f]*y1[NF,j,f,c] + F[f]*zF[f,j];		
+			for {i in 1..NT}{
+				let x1dot[i,j,f,c]:=(Mx1dot[i,j,f,c]-x1[i,j,f,c]*M1dot[i,f,c])/M1[i,f,c] ;
+				let x2dot[i,j,f,c]:=(Mx2dot[i,j,f,c]-x2[i,j,f,c]*M2dot[i,f,c])/M2[i,f,c];
+			};
+		};	
+    };
+};
+
+
+#end initialization
+
+#Mx1dot,Mx2dot;
+
+let {k in 0..K-1} F_rand[k] := Normal(0,F_dev) ;
+let {k in 0..K-1, i in 1..2} zF_rand[k,i] := Normal(0,zF_dev) ;
+#let {k in 0..K-1} zF_rand[k,3] := 1 - zF_rand[k,1] - zF_rand[k,2] ;
+
+for {k in 0..K-1}{
+let vkmin1:=vtr[k-1] ; 
+let lkmin1:=ltr[k-1];
+	#let {f in fe} F[f] := nominal_F+.25*sin(.5*3.1415*(k+f)) ; 
+	let {f in fe} F[f] := nominal_F; 
+	let {f in fe} pV[f] := nominal_pV ; 
+	let {f in fe} qF[f] := nominal_qF ; 
+	let {f in fe,i in 1..3} zF[f,i] := nominal_zF[i]; 
+let F_r := F[0] + noise_switch*F_rand[k] ;
+let {i in 1..2} zF_r[i] := zF[0,i] + noise_switch*zF_rand[k,i];
+let zF_r[3] := 1-zF_r[1] - zF_r[2] ; 
+
+/*
+#solve sequence of sigma values
+if k < K-1 then {
+	let sigma := .99 ;
+	solve;
+	};
+	
+	if k = K-1 then {
+
+	let sigma:= .99 ;
+	solve;
+	let sigcosttest[1,1] := cost[0]+0.223548 ;
+	let sigcosttest[2,1] := sum {f in fe} (cost[f]+0.223548) ;
+	let mult[1] := descent_con3;
+	let sigma := .9 ;
+	solve;
+	let sigcosttest[1,2] := cost[0]+0.223548 ;
+	let sigcosttest[2,2] := sum {f in fe} (cost[f]++0.223548) ;
+		let mult[2] := descent_con3;
+	let sigma := .7 ;
+	solve;
+	let sigcosttest[1,3] := cost[0] +0.223548;
+	let sigcosttest[2,3] := sum {f in fe} (cost[f]+0.223548) ;
+	let mult[3] := descent_con3;
+	let sigma := .5;
+	solve;
+	let sigcosttest[1,4] := cost[0]+0.223548 ;
+	let sigcosttest[2,4] := sum {f in fe} (cost[f]+0.223548) ;
+		let mult[4] := descent_con3;
+	let sigma := .3 ;
+	solve;
+	let sigcosttest[1,5] := cost[0]+0.223548 ;
+	let sigcosttest[2,5] := sum {f in fe} (cost[f]++0.223548) ;
+		let mult[5] := descent_con3;
+	let sigma := .1;
+	solve;
+	let sigcosttest[1,6] := cost[0] +0.223548;
+	let sigcosttest[2,6] := sum {f in fe} (cost[f]+0.223548) ;
+		let mult[6] := descent_con3;
+	let sigma:=.01;
+	solve;
+	let sigcosttest[1,7] := cost[0]+0.223548 ;
+	let sigcosttest[2,7] := sum {f in fe} (cost[f]+0.223548) ;
+		let mult[7] := descent_con3;
+};
+
+# end mono
+#display sigcosttest;
+*/
+
+		solve;
+		let step_time[k] := _solve_time;
+		for {q in 0..nfe}{
+		let normz[q] := (sum {i in 1..NT}(sum{j in 1..2}((x1_0[i,j,q]-x1ref[i,j])^2 +(x2_0[i,j,q]-x2ref[i,j])^2 )) + sum {i in 1..NT}( (M1_0[i,q]-M1ref[i])^2 + (M2_0[i,q]-M2ref[i])^2))^(.5); 
+		};
+		
+		let descepsk[k] := desceps;
+		let termepsk[k] := termeps;
+		let sol_stat[k] := solve_result_num;
+		let step_cost[k]:= cost[0];
+		let vtr[k] := vk ; 
+        let ltr[k] := lk ; 
+      	print solve_result_num,normx[k],step_cost[k],vtr[k],{s in 1..numstat} state_act[s,k] > results.tab;
+        /*
+        if sig_loop=1 then {
+		print solve_result_num,normx[k],step_cost[k],vtr[k],{s in 1..numstat} state_act[s,k] > desc_con_n50_p99.tab;
+		};
+		
+		 if sig_loop=2 then {
+		print solve_result_num,normx[k],step_cost[k],vtr[k],{s in 1..numstat} state_act[s,k] > desc_con_n50_p9.tab;
+		};
+		
+		 if sig_loop=3 then {
+		print solve_result_num,normx[k],step_cost[k],vtr[k],{s in 1..numstat} state_act[s,k] > desc_con_n50_p7.tab;
+		};
+		
+		 if sig_loop=4 then {
+		print solve_result_num,normx[k],step_cost[k],vtr[k],{s in 1..numstat} state_act[s,k] > desc_con_n50_p5.tab;
+		};
+		
+		 if sig_loop=5 then {
+		print solve_result_num,normx[k],step_cost[k],vtr[k],{s in 1..numstat} state_act[s,k] > desc_con_n50_p3.tab;
+		};
+		
+		 if sig_loop=6 then {
+		print solve_result_num,normx[k],step_cost[k],vtr[k],{s in 1..numstat} state_act[s,k] > desc_con_n50_p1.tab;
+		};
+		
+		 if sig_loop=7 then {
+		print solve_result_num,normx[k],step_cost[k],vtr[k],{s in 1..numstat} state_act[s,k] > desc_con_n50_p01.tab;
+		};
+		*/
+		
+	for {j in 1..NT}{
+		let x1set[j,1] := x1_r[j,1,3] ;
+		let x1set[j,2] := x1_r[j,2,3] ;
+		let x2set[j,1] := x2_r[j,1,3] ;
+		let x2set[j,2] := x2_r[j,2,3] ;
+		let M1set[j] := M1_r[j,3];
+		let M2set[j] := M2_r[j,3];
+		let state_act[j,k+1] := x1set[j,1];
+		let state_act[NT+j,k+1] := x1set[j,2];
+		let state_act[2*NT+j,k+1] := M1set[j] ; 
+		let state_act[3*NT+j,k+1] := x2set[j,1];
+		let state_act[4*NT+j,k+1] := x2set[j,2];
+		let state_act[5*NT+j,k+1] := M2set[j] ; 
+        };
+        let normx[k+1] :=(sum {i in 1..NT}(sum{j in 1..2}((x1set[i,j]-x1ref[i,j])^2 +(x2set[i,j]-x2ref[i,j])^2 )) + sum {i in 1..NT}( (M1set[i]-M1ref[i])^2 + (M2set[i]-M2ref[i])^2))^(.5) ;
+        
+        
+        #Initialize next NLP
+        	#Controls
+        for {q in 0..nfe-2}{
+        	let D1[q]:=D1[q+1];
+        	let B1[q]:=B1[q+1];
+        	let LT1[q]:=LT1[q+1] ;
+        	let VB1[q]:=VB1[q+1];
+        	let D2[q]:=D2[q+1];
+        	let B2[q]:=B2[q+1];
+        	let LT2[q]:=LT2[q+1] ;
+        	let VB2[q]:=VB2[q+1];
+  		};		
+  			let D1[nfe-1]:=D1ref;
+        	let B1[nfe-1]:=B1ref;
+        	let LT1[nfe-1]:=LT1ref ;
+        	let VB1[nfe-1]:=VB1ref;
+        	let D2[nfe-1]:=D2ref;
+        	let B2[nfe-1]:=B2ref;
+        	let LT2[nfe-1]:=LT2ref ;
+        	let VB2[nfe-1]:=VB2ref;
+       
+       		#States
+       		for {i in 1..NT}{
+       			for {c in cp}{
+       				for {j in 1..2}{
+       					for {q in 0..nfe-2}{
+       					let x1[i,j,q,c]:= x1[i,j,q+1,c];
+       					let x2[i,j,q,c]:= x2[i,j,q+1,c];
+       		};
+       			let x1[i,j,nfe-1,c]:= x1ref[i,j];
+       					let x2[i,j,nfe-1,c]:= x2ref[i,j];
+       		};
+       		};
+       		};
+       		
+for {i in 1..NT}{
+	for {j in 1..2}{
+		for {q in 0..nfe-1}{
+			let x1_0[i,j,q]:=x1_0[i,j,q+1];
+			let x2_0[i,j,q]:=x2_0[i,j,q+1];
+			};
+			let x1_0[i,j,nfe]:=x1ref[i,j];
+			let x2_0[i,j,nfe]:=x2ref[i,j];
+			};
+			};
+			
+			for {i in 1..NT}{
+       			for {c in cp}{
+       					for {q in 0..nfe-2}{
+       					let M1[i,q,c]:= M1[i,q+1,c];
+       					let M2[i,q,c]:= M2[i,q+1,c];
+       		};
+       			let M1[i,nfe-1,c]:= M1ref[i];
+       					let M2[i,nfe-1,c]:= M2ref[i];
+       		};
+       		};
+       		
+       		
+  for {i in 1..NT}{
+		for {q in 0..nfe-1}{
+			let M1_0[i,q]:=M1_0[i,q+1];
+			let M2_0[i,q]:=M2_0[i,q+1];
+			};
+			let M1_0[i,nfe]:=M1ref[i];
+			let M2_0[i,nfe]:=M2ref[i];
+			};     		
+    
+    
+    
+	for {i in 1..NT-1}{
+       			for {c in cp}{
+       				for {j in 1..2}{
+       					for {q in 0..nfe-2}{
+       					let y_1_1[i,j,q,c]:= y_1_1[i,j,q+1,c];
+       					let y_1_2[i,j,q,c]:= y_1_2[i,j,q+1,c];
+       					let y_2_1[i,j,q,c]:= y_2_1[i,j,q+1,c];
+       					let y_2_2[i,j,q,c]:= y_2_2[i,j,q+1,c];
+       					let y1[i,j,q,c]:= y_2_2[i,j,q+1,c];
+       					let y2[i,j,q,c]:= y2[i,j,q+1,c];
+       		};
+       			let y_1_1[i,j,nfe-1,c]:= y1ref[i,j];
+       			let y_1_2[i,j,nfe-1,c]:= y1ref[i,j];
+       			let y_2_1[i,j,nfe-1,c]:= y2ref[i,j];
+       			let y_2_2[i,j,nfe-1,c]:= y2ref[i,j];
+       			let y1[i,j,nfe-1,c]:= y1ref[i,j];
+       			let y2[i,j,nfe-1,c]:= y2ref[i,j];
+       		};
+       		};
+       		};
+       		   		
+ 	for {i in 1..NT-1}{
+ 		for {q in 1..nfe-2}{
+ 			let V1[i,q]:=V1[i,q+1];	
+ 				let V2[i,q]:=V2[i,q+1];			
+ 		};
+ 		let V1[i,nfe-1]:=V1ref[i];	
+ 				let V2[i,nfe-1]:=V2ref[i];	
+        };       		
+       		
+ for {i in 2..NT}{
+ 	for {c in cp}{
+ 		for {q in 1..nfe-2}{
+ 			let L1[i,q,c]:=L1[i,q+1,c];
+ 			let L2[i,q,c]:=L2[i,q+1,c];
+ 			};
+ 			let L1[i,nfe-1,c]:=L1ref[i];
+ 			let L2[i,nfe-1,c]:=L2ref[i];
+ 			};
+ 			};
+ 			
+ 			for {i in 2..NT}{
+ 		for {q in 1..nfe-1}{
+ 			let L1_0[i,q]:=L1_0[i,q+1];
+ 			let L2_0[i,q]:=L2_0[i,q+1];
+ 			};
+ 			let L1_0[i,nfe]:=L1ref[i];
+ 			let L2_0[i,nfe]:=L2ref[i];
+ 			};
+ 			
+ 			
+for {i in 1..NT}{
+	for {q in 0..nfe-1}{
+		let TC1[i,q] := TC1[i,q+1] ;
+		let TC2[i,q] := TC2[i,q+1] ;
+		};
+		let TC1[i,nfe] := TC1ref[i] ;
+		let TC2[i,nfe] := TC2ref[i] ;
+		};
+ 			
+   #end initialization  
+   	
+       		};
+
+	
+       		
+       		
+        	
+  
+
+
+let end_time := ctime();
+let avg_cost:= (sum{i in 0..K-1}step_cost[i])/K;
+let tot_cost:=sum{i in 0..K-1}step_cost[i]-K*lecss;
+display start_time,end_time,sol_stat,tot_cost;
+
+
+#};

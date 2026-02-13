@@ -1,0 +1,128 @@
+        #Initialize next NLP
+        	#Controls
+        for {q in 0..nfe-2}{
+        	let D1[q]:=D1[q+1];
+        	let B1[q]:=B1[q+1];
+        	let LT1[q]:=LT1[q+1] ;
+        	let VB1[q]:=VB1[q+1];
+        	let D2[q]:=D2[q+1];
+        	let B2[q]:=B2[q+1];
+        	let LT2[q]:=LT2[q+1] ;
+        	let VB2[q]:=VB2[q+1];
+  		};		
+  			#let D1[nfe-1]:=D1ref;
+        	#let B1[nfe-1]:=B1ref;
+        	#let LT1[nfe-1]:=LT1ref ;
+        	#let VB1[nfe-1]:=VB1ref;
+        	#let D2[nfe-1]:=D2ref;
+        	#let B2[nfe-1]:=B2ref;
+        	#let LT2[nfe-1]:=LT2ref ;
+        	#let VB2[nfe-1]:=VB2ref;
+       
+       		#States
+       		for {i in 1..NT}{
+       			for {c in cp}{
+       				for {j in 1..2}{
+       					for {q in 0..nfe-2}{
+       					let x1[i,j,q,c]:= x1[i,j,q+1,c];
+       					let x2[i,j,q,c]:= x2[i,j,q+1,c];
+       		};
+       			#et x1[i,j,nfe-1,c]:= x1ref[i,j];
+       					#let x2[i,j,nfe-1,c]:= x2ref[i,j];
+       		};
+       		};
+       		};
+       		
+for {i in 1..NT}{
+	for {j in 1..2}{
+		for {q in 0..nfe-1}{
+			let x1_0[i,j,q]:=x1_0[i,j,q+1];
+			let x2_0[i,j,q]:=x2_0[i,j,q+1];
+			};
+			#let x1_0[i,j,nfe]:=x1ref[i,j];
+			#let x2_0[i,j,nfe]:=x2ref[i,j];
+			};
+			};
+			
+			for {i in 1..NT}{
+       			for {c in cp}{
+       					for {q in 0..nfe-2}{
+       					let M1[i,q,c]:= M1[i,q+1,c];
+       					let M2[i,q,c]:= M2[i,q+1,c];
+       		};
+       			#let M1[i,nfe-1,c]:= M1ref[i];
+       					#let M2[i,nfe-1,c]:= M2ref[i];
+       		};
+       		};
+       		
+       		
+  for {i in 1..NT}{
+		for {q in 0..nfe-1}{
+			let M1_0[i,q]:=M1_0[i,q+1];
+			let M2_0[i,q]:=M2_0[i,q+1];
+			};
+		#	let M1_0[i,nfe]:=M1ref[i];
+			#let M2_0[i,nfe]:=M2ref[i];
+			};     		
+    
+    
+    
+	for {i in 1..NT-1}{
+       			for {c in cp}{
+       				for {j in 1..2}{
+       					for {q in 0..nfe-2}{
+       					let y_1_1[i,j,q,c]:= y_1_1[i,j,q+1,c];
+       					let y_1_2[i,j,q,c]:= y_1_2[i,j,q+1,c];
+       					let y_2_1[i,j,q,c]:= y_2_1[i,j,q+1,c];
+       					let y_2_2[i,j,q,c]:= y_2_2[i,j,q+1,c];
+       					let y1[i,j,q,c]:= y_2_2[i,j,q+1,c];
+       					let y2[i,j,q,c]:= y2[i,j,q+1,c];
+       		};
+       			#let y_1_1[i,j,nfe-1,c]:= y1ref[i,j];
+       			#let y_1_2[i,j,nfe-1,c]:= y1ref[i,j];
+       			#let y_2_1[i,j,nfe-1,c]:= y2ref[i,j];
+       			#let y_2_2[i,j,nfe-1,c]:= y2ref[i,j];
+       			#let y1[i,j,nfe-1,c]:= y1ref[i,j];
+       			#let y2[i,j,nfe-1,c]:= y2ref[i,j];
+       		};
+       		};
+       		};
+       		   		
+ 	for {i in 1..NT-1}{
+ 		for {q in 1..nfe-2}{
+ 			let V1[i,q]:=V1[i,q+1];	
+ 				let V2[i,q]:=V2[i,q+1];			
+ 		};
+ 	#	let V1[i,nfe-1]:=V1ref[i];	
+ 				#let V2[i,nfe-1]:=V2ref[i];	
+        };       		
+       		
+ for {i in 2..NT}{
+ 	for {c in cp}{
+ 		for {q in 1..nfe-2}{
+ 			let L1[i,q,c]:=L1[i,q+1,c];
+ 			let L2[i,q,c]:=L2[i,q+1,c];
+ 			};
+ 		#	let L1[i,nfe-1,c]:=L1ref[i];
+ 		#	let L2[i,nfe-1,c]:=L2ref[i];
+ 			};
+ 			};
+ 			
+ 			for {i in 2..NT}{
+ 		for {q in 1..nfe-1}{
+ 			let L1_0[i,q]:=L1_0[i,q+1];
+ 			let L2_0[i,q]:=L2_0[i,q+1];
+ 			};
+ 			#let L1_0[i,nfe]:=L1ref[i];
+ 			#let L2_0[i,nfe]:=L2ref[i];
+ 			};
+ 			
+ 			
+for {i in 1..NT}{
+	for {q in 0..nfe-1}{
+		let TC1[i,q] := TC1[i,q+1] ;
+		let TC2[i,q] := TC2[i,q+1] ;
+		};
+		#let TC1[i,nfe] := TC1ref[i] ;
+	#	let TC2[i,nfe] := TC2ref[i] ;
+		};

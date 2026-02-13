@@ -1,0 +1,15 @@
+param  omega:        1                  2                  3 :=        
+      1  0.19681547722366   0.39442431473909   0.37640306270047
+      2 -0.06553542585020   0.29207341166523   0.51248582618842
+      3  0.02377097434822  -0.04154875212600   0.11111111111111;
+
+read nominal_F<initial_data.dat;
+read nominal_pV<initial_data.dat;
+read nominal_qF<initial_data.dat;
+
+read {i in 1..NT} x1_nom[i,1]<initial_data.dat;
+read {i in 1..NT} x1_nom[i,2]<initial_data.dat;
+read {i in 1..NT} M1_nom[i]<initial_data.dat;
+read {i in 1..NT} x2_nom[i,1]<initial_data.dat;
+read {i in 1..NT} x2_nom[i,2]<initial_data.dat;
+read {i in 1..NT} M2_nom[i]<initial_data.dat;

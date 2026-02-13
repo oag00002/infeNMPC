@@ -1,0 +1,152 @@
+# Code propylene distillation column NMPC
+# Gilvan - 2012
+
+reset                                    ;
+
+suffix sens_state_0, IN;
+suffix sens_state_1, IN;
+suffix sens_state_value_1, IN;
+suffix sens_sol_state_1, OUT;
+suffix sens_init_constr, IN;
+
+##option solver ipopt;
+##option presolve 0;
+option solver ipopt_sens                ;
+option presolve 0;
+option ipopt_options 'run_sens yes'; 
+model propynmpc_ams_soft.mod                          ; 
+data asNMPC.dat  ;
+include varread.inc;
+solve;
+
+include varsave.inc;
+shell "rm sresult.dat";
+#shell "open sresult.dat";
+printf:"%e ",solve_result_num>>sresult.dat;
+close sresult.dat;
+display solve_result_num, solve_result;
+
+##if solve_result_num>=0&&solve_result_num<=99 then{
+##option solver ipopt_sens                ;
+##option presolve 0;
+#option ipopt_options 'acceptable_obj_change_tol 1e-5';               
+##ption ipopt_options 'run_sens yes'; 
+##solve;
+ 
+#include warm.inc;
+#include multipliersread.inc;
+
+
+
+
+
+
+shell "open profits.dat";
+printf:"%e ",profit>>profits.dat;
+printf:"\n",profit>>profits.dat;
+close profits.dat;
+
+#include warmsave.inc;
+
+#include varsave.inc;
+#include multiplierssave.inc;
+
+
+shell "rm control.dat";
+for {i in fe}{
+printf: "%e ",           D[i].sens_sol_state_1 >>control.dat;
+printf: "%e ",           B[i].sens_sol_state_1 >>control.dat;
+printf: "%e ",           Psteam[i].sens_sol_state_1 >>control.dat;
+printf: "%e ",           Reflux[i].sens_sol_state_1>>control.dat;
+#printf: "%e ",           D[i]>>control.dat;
+#printf: "%e ",           B[i] >>control.dat;
+#printf: "%e ",           Psteam[i] >>control.dat;
+#printf: "%e ",           Reflux[i]>>control.dat;
+printf "\n" >>control.dat;
+}
+printf "\n" >>control.dat;
+close control.dat;
+
+shell "rm origControl.dat";
+for {i in fe}{
+printf: "%e ",           D[i]>>origControl.dat;
+printf: "%e ",           B[i]>>origControl.dat;
+printf: "%e ",           Psteam[i]>>origControl.dat;
+printf: "%e ",           Reflux[i]>>origControl.dat;
+#printf: "%e ",           D[i]>>control.dat;
+#printf: "%e ",           B[i] >>control.dat;
+#printf: "%e ",           Psteam[i] >>control.dat;
+#printf: "%e ",           Reflux[i]>>control.dat;
+printf "\n" >>origControl.dat;
+}
+printf "\n" >>origControl.dat;
+close origControl.dat;
+
+shell "rm M0.dat";
+shell "rm x0.dat";
+for {i in tray}{
+    for {j in fe}{
+        printf:"%e ",M_0[i,j].sens_sol_state_1>>M0.dat;
+        printf:"%e ",x_0[i,j].sens_sol_state_1>>x0.dat;
+#        printf:"%e ",M_0[i,j]>>M0.dat;
+#        printf:"%e ",x_0[i,j]>>x0.dat;
+    }
+    printf "\n">>M0.dat;
+    printf "\n">>x0.dat;
+}
+
+close M0.dat;
+close x0.dat;
+
+shell "rm VU.dat";
+shell "rm VL.dat";
+shell "rm Eps.dat";
+
+for {i in tray}{
+    for {j in fe}{
+        for {k in cp}{
+            printf:"%e ",Meps[i,j,k]>>Eps.dat;
+            printf "\n">>Eps.dat;
+#            printf:"%e ",M.ipopt_zU_out[i,j,k]>>VU.dat;
+#            printf:"%e ",M.ipopt_zL_out[i,j,k]>>VL.dat;
+#            printf "\n">>VU.dat;
+#            printf "\n">>VL.dat;
+
+}
+}
+}
+
+for {i in tray}{
+    for {j in fe}{
+        for {k in cp}{
+            printf:"%e ",xeps[i,j,k]>>Eps.dat;
+            printf "\n">>Eps.dat;
+}
+}
+}
+
+
+close Eps.dat;
+
+display xeps[1,1,1],xeps[1,1,2],Meps[1,1,1],Meps[1,1,2];
+
+close VU.dat;
+close VL.dat;
+
+shell "rm vio.dat";
+
+printf: "%e ",           D[1].sens_sol_state_1 >>vio.dat;
+printf: "%e ",           B[1].sens_sol_state_1 >>vio.dat;
+printf: "%e ",           Psteam[1].sens_sol_state_1 >>vio.dat;
+close vio.dat;
+
+shell "rm origVio.dat";
+
+printf: "%e ",           D[1] >>origVio.dat;
+printf: "%e ",           B[1] >>origVio.dat;
+printf: "%e ",           Psteam[1] >>origVio.dat;
+close origVio.dat;
+##}
+#display B,D,Psteam;
+#display Rec.sens_sol_state_1,Pchest.sens_sol_state_1,Qr.sens_sol_state_1,Qc.sens_sol_state_1,Fs.sens_sol_state_1,Ts.sens_sol_state_1;
+#display Rec,Pchest,Qr,Qc,Fs,Ts;

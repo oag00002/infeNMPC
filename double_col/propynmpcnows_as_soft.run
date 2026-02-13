@@ -1,0 +1,116 @@
+# Code propylene distillation column NMPC
+# Gilvan - 2012
+
+reset                                    ;
+
+suffix sens_state_0, IN;
+suffix sens_state_1, IN;
+suffix sens_state_value_1, IN;
+suffix sens_sol_state_1, OUT;
+suffix sens_init_constr, IN;
+
+
+option solver ipopt_sens                ;
+option presolve 0;
+option ipopt_options 'run_sens no'; 
+
+model propynmpc_ams_soft.mod                          ; 
+data asNMPC.dat                           ;
+option ipopt_options 'run_sens yes'; 
+option auxfiles 'rc';
+write gvars;
+#option ipopt_options 'output_file NLP.out';
+solve;
+
+shell "rm sresult.dat";
+#shell "open sresult.dat";
+printf:"%e ",solve_result_num>>sresult.dat;
+close sresult.dat;
+
+shell "open profits.dat";
+printf:"%e ",profit>>profits.dat;
+printf:"\n",profit>>profits.dat;
+close profits.dat;
+
+#include warmsave.inc;
+include varsave.inc;
+#include varsave.inc;
+#include multiplierssave.inc;
+
+shell "rm control.dat";
+for {i in fe}{
+printf: "%e ",           D[i].sens_sol_state_1 >>control.dat;
+printf: "%e ",           B[i].sens_sol_state_1 >>control.dat;
+printf: "%e ",           Psteam[i].sens_sol_state_1 >>control.dat;
+printf: "%e ",           Reflux[i].sens_sol_state_1>>control.dat;
+#printf: "%e ",           D[i]>>control.dat;
+#printf: "%e ",           B[i] >>control.dat;
+#printf: "%e ",           Psteam[i] >>control.dat;
+#printf: "%e ",           Reflux[i]>>control.dat;
+printf "\n" >>control.dat;
+}
+printf "\n" >>control.dat;
+
+shell "rm M0.dat";
+shell "rm x0.dat";
+##shell "rm 
+for {i in tray}{
+    for {j in fe}{
+        printf:"%e ",M_0[i,j].sens_sol_state_1>>M0.dat;
+        printf:"%e ",x_0[i,j].sens_sol_state_1>>x0.dat;
+#        printf:"%e ",M_0[i,j]>>M0.dat;
+#        printf:"%e ",x_0[i,j]>>x0.dat;
+    }
+    printf "\n">>M0.dat;
+    printf "\n">>x0.dat;
+}
+
+close M0.dat;
+close x0.dat;
+
+##shell "rm V.dat";
+##shell "rm T.dat";
+##shell "rm L.dat";
+##shell "rm Qr.dat";
+##shell "rm D.dat";
+##shell "rm Qc.dat";
+##shell "rm Tout.dat";
+##shell "rm roreb.dat";
+##shell "rm rorebm.dat";
+##shell "rm Wreb.dat";
+##shell "rm Wrebl.dat";
+
+shell "rm VU.dat";
+shell "rm VL.dat";
+shell "rm Eps.dat";
+
+for {i in tray}{
+    for {j in fe}{
+        for {k in cp}{
+            printf:"%e ",Meps[i,j,k]>>Eps.dat;
+            printf "\n">>Eps.dat;
+#            printf:"%e ",M.ipopt_zU_out[i,j,k]>>VU.dat;
+#            printf:"%e ",M.ipopt_zL_out[i,j,k]>>VL.dat;
+#            printf "\n">>VU.dat;
+#            printf "\n">>VL.dat;
+
+}
+}
+}
+
+for {i in tray}{
+    for {j in fe}{
+        for {k in cp}{
+            printf:"%e ",xeps[i,j,k]>>Eps.dat;
+            printf "\n">>Eps.dat;
+}
+}
+}
+
+
+close Eps.dat;
+close VU.dat;
+close VL.dat;
+
+#display xeps[1,1,1],xeps[1,1,2],Meps[1,1,1],Meps[1,1,2];
+

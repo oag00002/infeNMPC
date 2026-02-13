@@ -1,0 +1,148 @@
+param  omega:        1                  2                  3 :=        
+      1  0.19681547722366   0.39442431473909   0.37640306270047
+      2 -0.06553542585020   0.29207341166523   0.51248582618842
+      3  0.02377097434822  -0.04154875212600   0.11111111111111;
+
+read time<initial_data.dat;
+read nfe<initial_data.dat;
+read a<initial_data.dat;
+read b<initial_data.dat;
+read nominal_F<initial_data.dat;
+read nominal_zF[1] < initial_data.dat;
+read nominal_zF[2] < initial_data.dat;
+read nominal_zF[3] < initial_data.dat;
+read nominal_pV<initial_data.dat;
+read nominal_qF<initial_data.dat;
+
+let {q in fe} h[q] := 1;
+
+read {i in 1..NT} x1set[i,1]<initial_data.dat;
+read {i in 1..NT} x1set[i,2]<initial_data.dat;
+read {i in 1..NT} M1set[i]<initial_data.dat;
+read {i in 1..NT} x2set[i,1]<initial_data.dat;
+read {i in 1..NT} x2set[i,2]<initial_data.dat;
+read {i in 1..NT} M2set[i]<initial_data.dat;
+
+read {i in weights} weight[i]<newd.dat;
+
+read Fref<F.dat;
+read qFref<qF.dat;
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y1ref[i,j]<y1.dat;
+read y2ref[i,j]<y2.dat;
+read y_1_1ref[i,j]<y_1_1.dat;
+read y_1_2ref[i,j]<y_1_2.dat;
+read y_2_1ref[i,j]<y_2_1.dat;
+read y_2_2ref[i,j]<y_2_2.dat;
+}}
+
+for {i in 1..NT}{
+for {j in 1..2}{
+read x1ref[i,j]<x1.dat;
+read x2ref[i,j]<x2.dat;
+}}
+
+for {i in 1..NT}{
+read M1ref[i]<M1.dat;
+read M2ref[i]<M2.dat;
+read TC1ref[i]<TC1.dat;
+read TC2ref[i]<TC2.dat;
+}
+
+for {i in 2..NT}{
+read L1ref[i]<L1.dat;
+read L2ref[i]<L2.dat;
+}
+
+for {i in 1..NT-1}{
+read V1ref[i]<V1.dat;
+read V2ref[i]<V2.dat;
+}
+
+read D1ref<D1.dat;
+read B1ref<B1.dat;
+read D2ref<D2.dat;
+read B2ref<B2.dat;
+
+read pVref<pV.dat;
+read VB1ref<VB1.dat;
+read VB2ref<VB2.dat;
+read LT1ref<LT1.dat;
+read LT2ref<LT2.dat;
+
+read F_w<initial_data.dat;
+read qF_w<initial_data.dat;
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y1_w[i,j]<initial_data.dat;}}
+
+for {i in 1..NT}{
+for {j in 1..2}{
+read x1_w[i,j]<initial_data.dat;}}
+
+for {i in 2..NT-1}{
+read M1_w[i]<initial_data.dat;}
+
+for {i in 1..NT-1}{
+read V1_w[i]<initial_data.dat;}
+
+for {i in 2..NT}{
+read L1_w[i]<initial_data.dat;}
+
+read D1_w<initial_data.dat;
+read B1_w<initial_data.dat;
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y_1_1_w[i,j]<initial_data.dat;}}
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y_1_2_w[i,j]<initial_data.dat;}}
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y2_w[i,j]<initial_data.dat;}}
+
+for {i in 1..NT}{
+for {j in 1..2}{
+read x2_w[i,j]<initial_data.dat;}}
+
+for {i in 2..NT-1}{
+read M2_w[i]<initial_data.dat;}
+
+for {i in 1..NT-1}{
+read V2_w[i]<initial_data.dat;}
+
+for {i in 2..NT}{
+read L2_w[i]<initial_data.dat;}
+
+read D2_w<initial_data.dat;
+read B2_w<initial_data.dat;
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y_2_1_w[i,j]<initial_data.dat;}}
+
+for {i in 1..NT-1}{
+for {j in 1..2}{
+read y_2_2_w[i,j]<initial_data.dat;}}
+
+read pV_w<initial_data.dat;
+read VB1_w<initial_data.dat;
+read VB2_w<initial_data.dat;
+read LT1_w<initial_data.dat;
+read M1_w[1]<initial_data.dat;
+read M1_w[41]<initial_data.dat;
+
+for {i in 1..NT}{
+read TC1_w[i]<initial_data.dat;}
+
+read LT2_w<initial_data.dat;
+read M2_w[1]<initial_data.dat;
+read M2_w[41]<initial_data.dat;
+
+for {i in 1..NT}{
+read TC2_w[i]<initial_data.dat;}
+

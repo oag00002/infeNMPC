@@ -1,0 +1,212 @@
+###########################################################################
+# RUN FILE COLUMN 1 AND 2 #################################################
+###########################################################################
+
+reset ;
+
+### load model
+model economicss.mod;
+data economicss.dat;
+
+#-----------
+# Options
+#-----------
+option solver ipopt;
+#option show_stats 1 ;
+#option display_precision 0;
+
+### turn presolve off
+option presolve 0;
+option auxfiles 'rc';
+write gvars;
+
+
+########
+# Solve
+########
+
+solve;
+
+#########
+# Print
+##########
+##option solver gjh;
+##write gtest;
+##solve;
+##shell "rm hessian.dat";
+##include test.gjh;
+##for {i in 1..979}{
+##for {j in 1..979}{
+##printf:"%e ",H[i,j]>>hessian.dat;} 
+##printf "\n">>hessian.dat;
+##}
+
+shell 'rm states.dat';
+for {i in 1..NT}{
+printf:"%e ",x1[i,1]>>states.dat;
+printf "\n">>states.dat;}
+
+for {i in 1..NT}{
+printf:"%e ",x1[i,2]>>states.dat;
+printf "\n">>states.dat;}
+
+for {i in 1..NT}{
+printf:"%e ",M1[i]>>states.dat;
+printf "\n">>states.dat;}
+
+for {i in 1..NT}{
+printf:"%e ",x2[i,1]>>states.dat;
+printf "\n">>states.dat;}
+
+for {i in 1..NT}{
+printf:"%e ",x2[i,2]>>states.dat;
+printf "\n">>states.dat;}
+
+for {i in 1..NT}{
+printf:"%e ",M2[i]>>states.dat;
+printf "\n">>states.dat;}
+close states.dat;
+
+shell 'rm control.dat';
+printf:"%e ",LT1>>control.dat;
+printf:"%e ",VB1>>control.dat;
+printf:"%e ",LT2>>control.dat;
+printf:"%e ",VB2>>control.dat;
+printf:"%e ",D1>>control.dat;
+printf:"%e ",B1>>control.dat;
+printf:"%e ",D2>>control.dat;
+printf:"%e ",B2>>control.dat;
+printf:"%e ",F>>control.dat;
+printf:"%e ",qF>>control.dat;
+close control.dat;
+
+shell 'rm F.dat';
+printf:"%e ",F>>F.dat;
+close F.dat;
+
+shell 'rm qF.dat';
+printf:"%e ",qF>>qF.dat;
+close qF.dat;
+
+shell 'rm y1.dat';
+shell 'rm y2.dat';
+for {i in 1..NT-1}{
+for {j in 1..2}{
+printf:"%e ",y1[i,j]>>y1.dat;
+printf "\n">>y1.dat;
+printf:"%e ",y2[i,j]>>y2.dat;
+printf "\n">>y2.dat;}}
+close y1.dat;
+close y2.dat;
+
+shell 'rm x1.dat';
+shell 'rm x2.dat';
+for {i in 1..NT}{
+for {j in 1..2}{
+printf:"%e ",x1[i,j]>>x1.dat;
+printf "\n">>x1.dat;
+printf:"%e ",x2[i,j]>>x2.dat;
+printf "\n">>x2.dat;}}
+close x1.dat;
+close x2.dat;
+
+shell 'rm M1.dat';
+shell 'rm M2.dat';
+for {i in 1..NT}{
+printf:"%e ",M1[i]>>M1.dat;
+printf "\n">>M1.dat;
+printf:"%e ",M2[i]>>M2.dat;
+printf "\n">>M2.dat;}
+close M1.dat;
+close M2.dat;
+
+shell 'rm V1.dat';
+shell 'rm V2.dat';
+for {i in 1..NT-1}{
+printf:"%e ",V1[i]>>V1.dat;
+printf "\n">>V1.dat;
+printf:"%e ",V2[i]>>V2.dat;
+printf "\n">>V2.dat;}
+close V1.dat;
+close V2.dat;
+
+
+shell 'rm L1.dat';
+shell 'rm L2.dat';
+for {i in 2..NT}{
+printf:"%e ",L1[i]>>L1.dat;
+printf "\n">>L1.dat;
+printf:"%e ",L2[i]>>L2.dat;
+printf "\n">>L2.dat;}
+close L1.dat;
+close L2.dat;
+
+
+shell 'rm D1.dat';
+printf:"%e ",D1>>D1.dat;
+close D1.dat;
+
+shell 'rm B1.dat';
+printf:"%e ",B1>>B1.dat;
+close B1.dat;
+
+shell 'rm D2.dat';
+printf:"%e ",D2>>D2.dat;
+close D2.dat;
+
+shell 'rm B2.dat';
+printf:"%e ",B2>>B2.dat;
+close B2.dat;
+
+shell 'rm y_1_1.dat';
+shell 'rm y_1_2.dat';
+shell 'rm y_2_1.dat';
+shell 'rm y_2_2.dat';
+for {i in 1..NT-1}{
+for {j in 1..2}{
+printf:"%e ",y_1_1[i,j]>>y_1_1.dat;
+printf "\n">>y_1_1.dat;
+printf:"%e ",y_1_2[i,j]>>y_1_2.dat;
+printf "\n">>y_1_2.dat;
+printf:"%e ",y_2_1[i,j]>>y_2_1.dat;
+printf "\n">>y_2_1.dat;
+printf:"%e ",y_2_2[i,j]>>y_2_2.dat;
+printf "\n">>y_2_2.dat;}}
+close y_1_1.dat;
+close y_1_2.dat;
+close y_2_1.dat;
+close y_2_2.dat;
+
+shell 'rm pV.dat';
+printf:"%e ",pV>>pV.dat;
+close pV.dat;
+
+shell 'rm VB1.dat';
+printf:"%e ",VB1>>VB1.dat;
+close VB1.dat;
+
+shell 'rm VB2.dat';
+printf:"%e ",VB2>>VB2.dat;
+close VB2.dat;
+
+shell 'rm LT1.dat';
+printf:"%e ",LT1>>LT1.dat;
+close LT1.dat;
+
+shell 'rm LT2.dat';
+printf:"%e ",LT2>>LT2.dat;
+close LT2.dat;
+
+shell 'rm TC1.dat';
+shell 'rm TC2.dat';
+for {i in 1..NT}{
+printf:"%e ", TC1[i]>>TC1.dat;
+printf "\n">>TC1.dat;
+printf:"%e ",TC2[i]>>TC2.dat;
+printf "\n">>TC2.dat;}
+close TC1.dat;
+close TC2.dat;
+
+shell 'rm cost.dat';
+printf:"%e ",cost>>cost.dat;
+close cost.dat;

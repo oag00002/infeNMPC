@@ -1,0 +1,176 @@
+reset;
+reset options;
+param start_time symbolic;
+param end_time symbolic;
+let start_time := ctime();
+option solver ipopt, randseed 7;
+option ipopt_options "tol=1e-6 max_iter=1000" ;
+model column2_term_change_2.mod;
+data column2_dynamic.dat;
+
+read{i in s, j in s} P[i,j] < P.txt;
+
+
+let termnorm := termnorm_b2 ; 
+let nfe := Nmax ;
+let vtr[-1]:=99999;
+let ltr[-1]:=0 ;
+
+#set nominal feed comp
+let nominal_zF[1] := 0.4 ;#
+let nominal_zF[2] := 0.2 ;#
+let nominal_zF[3] := 0.4 ;
+
+#Initialize first NLP
+let {k in 0..K-1} F_rand[k] := Normal(0,F_dev) ;
+let {k in 0..K-1, i in 1..2} zF_rand[k,i] := Normal(0,zF_dev) ;
+	let  F := nominal_F; 
+	let pV:= nominal_pV ; 
+	let qF:= nominal_qF ; 
+	let {i in 1..3} zF[i] := nominal_zF[i]; 
+
+#define first real state
+for {j in 1..NT}{
+let state_act[j,0] := x1set[j,1];
+let state_act[NT+j,0] := x1set[j,2];
+let state_act[2*NT+j,0] := M1set[j] ; 
+let state_act[3*NT+j,0] := x2set[j,1];
+let state_act[4*NT+j,0] := x2set[j,2];
+let state_act[5*NT+j,0] := M2set[j] ; 
+};
+let xak[0] := x1set[41,1] ; 
+let xbk[0] := x2set[41,2] ; 
+let xck[0] := 1 - x2set[1,1]-x2set[1,2] ; 
+
+
+#Define regularization weights
+include weights.run; 
+
+include first_init.run;
+
+
+#####################
+#     NMPC Loop     #
+#####################
+for {k in 0..K-1}{
+
+display k ;
+let vkmin1:=vtr[k-1] ; 
+let lkmin1:=ltr[k-1];
+
+
+#first setpoint change######
+if k = 50 then { 
+include steady_state_c2.run;
+include first_init.run;
+let vkmin1 := 99999  ;
+};
+
+###################################
+
+
+#second setpoint change######
+if k = 100 then{
+
+include steady_state_a2.run ;
+include first_init.run ; 
+let vkmin1 := 99999  ;
+};               
+############################
+
+
+let normx[k] := (sum {i in 1..NT}(sum{j in 1..2}((x1set[i,j]-x1ref[i,j])^2 +(x2set[i,j]-x2ref[i,j])^2 )) + sum {i in 1..NT}( (M1set[i]-M1ref[i])^2 + (M2set[i]-M2ref[i])^2))^(.5) ;
+
+
+	
+	#set real feed flow and comp
+let F_r := F + noise_switch*F_rand[k] ;
+if F_r < 0 then let F_r := 0 ;
+let Fk[k] := F_r ; 
+
+let {i in 1..2} zF_r[i] := zF[i] + noise_switch*zF_rand[k,i];
+for {i in 1..2}{
+if zF_r[i] < 0 then let zF_r[i]:= 0 ;
+if zF_r[i] > 1 then let zF_r[i] := 1 ; 
+};
+if sum{i in 1..2} zF_r[i] > 1 then let zF_r[2] := 1 - zF_r[1] ; 
+let zF_r[3] := 1-zF_r[1] - zF_r[2] ; 
+for {i in 1..3}{
+	let zFk[k,i] := zF_r[i] ; 
+	}; 
+
+
+#solve full NMPC
+		solve;
+		let vtr[k] := vk ; 
+        let ltr[k] := lk ; 
+        let termepsk[k] := termeps ;
+        let descepsk[k] := desceps;
+		let step_time[k] := _solve_time;	
+		let sol_stat[k] := solve_result_num;
+		let step_cost[k]:= cost[0];
+		
+		#find next real state   
+
+#define next state		
+			for {j in 1..NT}{
+		let state_act[j,k+1] := x1_r[j,1,3] ;
+		let state_act[NT+j,k+1] := x1_r[j,2,3] ;
+	let state_act[2*NT+j,k+1]:= x2_r[j,1,3] ;
+		let state_act[3*NT+j,k+1] := x2_r[j,2,3] ;
+		let state_act[4*NT+j,k+1] := M1_r[j,3];
+		let state_act[5*NT+j,k+1] := M2_r[j,3];
+        };   	
+
+let xak[k+1] := x1_r[41,1,3] ; 
+let xbk[k+1] := x2_r[41,2,3] ; 
+let xck[k+1] := 1 - x2_r[1,1,3]-x2_r[1,2,3] ; 
+
+
+#define implemented control
+let uk[1,k] := D1[0];
+let uk[2,k] := B1[0] ;
+let uk[3,k ] := LT1[0] ;
+let uk[4,k] := VB1[0] ; 
+let uk[5,k] := D2[0] ;
+let uk[6,k] := B2[0] ;
+let uk[7,k] := LT2[0] ;
+let uk[8,k] := VB2[0];        
+
+      	 #define initial condition for next NMPC
+      	 
+      	   	for {j in 1..NT}{
+		let x1set[j,1] := 	state_act[j,k+1] ;
+		let x1set[j,2] := state_act[NT+j,k+1] ;
+		let x2set[j,1] := state_act[2*NT+j,k+1];
+		let x2set[j,2] := state_act[3*NT+j,k+1] ;
+		let M1set[j] := state_act[4*NT+j,k+1];
+		let M2set[j] := state_act[5*NT+j,k+1];
+		
+        }; 
+        
+print k,normx[k],step_cost[k],step_time[k]> sc3_nu_unc.tab;
+#print k,normx[k],term_step[k],sens_term_step[k],Nk[k],step_time[k],xak[k],xbk[k],xck[k],  {i in 1..246}state_act[i,k],{i in 1..8}uk[i,k]> qiahnmpc_p3_unc_50.tab;  	
+#print k,normx[k],term_step[k],sens_term_step[k],Nk[k],step_time[k],xak[k],xbk[k],xck[k],  {i in 1..246}state_act[i,k],{i in 1..8}uk[i,k]> qiahnmpc_p2_nom_50.tab;  	 
+#print k,normx[k],term_step[k],sens_term_step[k],Nk[k],step_time[k],xak[k],xbk[k],xck[k],  {i in 1..246}state_act[i,k],{i in 1..8}uk[i,k]> qiahnmpc_p3_nom_50.tab;  
+       		};
+##################
+###End NMPC Loop
+####################      		
+
+let end_time := ctime();
+#let avg_cost:= (sum{i in 0..K-1}step_cost[i])/K;
+#let tot_cost:=sum{i in 0..K-1}step_cost[i]-K*lecss;
+display start_time,end_time;
+display sol_stat;
+#display sens_sol_stat;
+#display term_step ;
+#display sens_term_step;
+display step_time ;
+display termepsk;
+display descepsk;
+display normx;
+display step_cost;
+
+
+

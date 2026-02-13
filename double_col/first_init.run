@@ -1,0 +1,164 @@
+#set statess
+ 	for {j in 1..NT}{
+		let state_act_ss[j] := x1ref[j,1] ;
+		let state_act_ss[NT+j] := x1ref[j,2] ;
+	let state_act_ss[2*NT+j]:= x2ref[j,1] ;
+		let state_act_ss[3*NT+j] := x2ref[j,2] ;
+		let state_act_ss[4*NT+j] := M1ref[j];
+		let state_act_ss[5*NT+j] := M2ref[j];
+        };   	
+
+#Initialize first NLP
+
+
+for {q in fe}{
+	let D1[q]:=D1ref;
+	let B1[q]:=B1ref;
+	let LT1[q]:=LT1ref;
+	let VB1[q]:=VB1ref;
+	let D2[q]:=D2ref;
+	let B2[q]:=B2ref;
+	let LT2[q]:=LT2ref;
+	let VB2[q]:=VB2ref;
+};
+for {q in 0..nfe}{
+	for {j in 1..NT}{
+		for {p in 1..2}{
+			let x1_0[j,p,q] :=x1set[j,p]+ (x1ref[j,p] - x1set[j,p])*q/nfe ;
+			let x2_0[j,p,q] :=x2set[j,p]+ (x2ref[j,p] - x2set[j,p])*q/nfe ; 
+        };
+       let M1_0[j,q] :=M1set[j]+ (M1ref[j] - M1set[j])*q/nfe ;
+       let M2_0[j,q] :=M2set[j]+ (M2ref[j] - M2set[j])*q/nfe ;       
+    };   
+};       
+       
+for {i in 1..NT}{       
+       	 for  {f in fe}{
+       	    	for {j in 1..2}{
+       	   		 let x1[i,j,f,3] := x1_0[i,j,f+1] ; 
+       	  		  let x2[i,j,f,3] := x2_0[i,j,f+1] ; 
+       		    };
+       	let M1[i,f,3] := M1_0[i,f+1] ; 
+       	  let M2[i,f,3] := M2_0[i,f+1] ; 
+       	 };
+  };     	    
+       	     
+       
+ for {i in 1..NT}{
+ 	for {f in fe}{
+ 		for {c in 1..2}{
+ 			for {j in 1..2}{
+            	let x1[i,j,f,c] := x1_0[i,j,f] + (x1[i,j,f,3] - x1_0[i,j,f])*c/3 ; 
+            	let x2[i,j,f,c] := x2_0[i,j,f] + (x2[i,j,f,3] - x2_0[i,j,f])*c/3 ; 
+            	};
+          let M1[i,f,c] := M1_0[i,f] + (M1[i,f,3] - M1_0[i,f])*c/3 ; 
+          let M2[i,f,c] := M2_0[i,f] + (M2[i,f,3] - M2_0[i,f])*c/3 ; 
+            };
+            };
+            };
+            
+for { i in 1..NT-1}{
+	for {j in 1..2}{
+		for {f in fe}{
+			for {c in cp}{
+				let y_1_1[i,j,f,c] := x1[i,j,f,c]*m_alpha[j,j] ;            
+                let y_1_2[i,j,f,c] := ((x1[i,1,f,c]*(alpha[1]-1)+x1[i,2,f,c]*(alpha[2]-1))+1) ;     
+                  let y1[i,j,f,c] := y_1_1[i,j,f,c]/y_1_2[i,j,f,c]  ;
+                  let y_2_1[i,j,f,c] := x2[i,j,f,c]*m_alpha[j,j] ;            
+                let y_2_2[i,j,f,c] := ((x2[i,1,f,c]*(alpha[1]-1)+x2[i,2,f,c]*(alpha[2]-1))+1) ;     
+                  let y2[i,j,f,c] := y_2_1[i,j,f,c]/y_2_2[i,j,f,c]  ;
+                  };
+                  };
+                  };
+                  };
+                  
+for {i in 1..NF-1}{
+	for {f in fe}{
+		let V1[i,f] := VB1[f] ;
+		 let V2[i,f] := VB2[f] ;
+		 };
+		 }; 
+		
+		
+		
+for {i in NF..NT-1}{
+	for {f in fe}{		
+          let V1[i,f] := VB1[f] + (1-qF)*F;
+          let V2[i,f] := VB2[f] ; 
+          };
+          };
+          
+	for {f in fe}{
+		for {c in cp}{
+			for {i in 2..NF}{
+			let L1[i,f,c] := Kbf*( (M1[i,f,c] - Muw+sqrt((M1[i,f,c] - Muw)^2+10^(-8)))/2    )^1.5 ;
+				let L2[i,f,c] := Kbf*( (M2[i,f,c] - Muw+sqrt((M2[i,f,c] - Muw)^2+10^(-8)))/2    )^1.5 ;
+			};
+			for {i in NF+1..NT-1}{          
+            	let L1[i,f,c] := Kuf*( (M1[i,f,c] - Muw+sqrt((M1[i,f,c] - Muw)^2+10^(-8)))/2 )^1.5 ;
+            	     	let L2[i,f,c] := Kuf*( (M2[i,f,c] - Muw+sqrt((M2[i,f,c] - Muw)^2+10^(-8)))/2 )^1.5 ;
+            };
+              let L1[NT,f,c] := LT1[f]; 
+                let L2[NT,f,c] := LT2[f]; 
+          };
+   };       
+   
+   	for {f in fe}{
+		for {i in 2..NF}{
+			let L1_0[i,f] := Kbf*( (M1_0[i,f] - Muw+sqrt((M1_0[i,f] - Muw)^2+10^(-8)))/2    )^1.5 ;
+				let L2_0[i,f] := Kbf*( (M2_0[i,f] - Muw+sqrt((M2_0[i,f] - Muw)^2+10^(-8)))/2    )^1.5 ;
+			};
+			for {i in NF+1..NT-1}{          
+            	let L1_0[i,f] := Kuf*( (M1_0[i,f] - Muw+sqrt((M1_0[i,f] - Muw)^2+10^(-8)))/2 )^1.5 ;
+            	     	let L2_0[i,f] := Kuf*( (M2_0[i,f] - Muw+sqrt((M2_0[i,f] - Muw)^2+10^(-8)))/2 )^1.5 ;
+            };
+              let L1_0[NT,f] := LT1[f]; 
+                let L2_0[NT,f] := LT2[f]; 
+   };  	
+
+for {i in 1..NT}{
+	for {f in fe}{
+		let TC1[i,f] := x1_0[i,1,f]*353.3 + x1_0[i,2,f]*383.8 + (1-x1_0[i,1,f]-x1_0[i,2,f])*411.5 ;
+        let TC2[i,f] := x2_0[i,1,f]*353.3 + x2_0[i,2,f]*383.8 + (1-x2_0[i,1,f]-x2_0[i,2,f])*411.5 ;  	
+};
+};      
+
+for {f in fe}{
+	for {c in cp}{
+let M2dot[1,f,c]:=L2[2,f,c] - V2[1,f] - B2[f];
+let M1dot[1,f,c]:=L1[2,f,c] - V1[1,f] - B1[f];
+ let M2dot[NT,f,c]:=V2[NT-1,f] - LT2[f] - D2[f];
+   let M1dot[NT,f,c]:=V1[NT-1,f] - LT1[f] - D1[f];
+		for {i in NF+1..NT-1}{
+			let M1dot[i,f,c]:=L1[i+1,f,c] - L1[i,f,c] + V1[i-1,f] - V1[i,f];
+			 let M2dot[i,f,c]:=L2[i+1,f,c] - L2[i,f,c] + V2[i-1,f] - V2[i,f]; 
+		};
+		for {i in 2..NF-1}{
+				let M1dot[i,f,c] :=L1[i+1,f,c] - L1[i,f,c] + V1[i-1,f] - V1[i,f];
+				 let M2dot[i,f,c]:=L2[i+1,f,c] - L2[i,f,c] + V2[i-1,f] - V2[i,f];
+		};
+		let M2dot[NF,f,c]:=L2[NF+1,f,c] - L2[NF,f,c] + V2[NF-1,f] - V2[NF,f] + B1[f];
+			let M1dot[NF,f,c]:=L1[NF+1,f,c] - L1[NF,f,c] + V1[NF-1,f] - V1[NF,f] + F;
+		for {j in 1..2}{
+			let Mx1dot[1,j,f,c]:=L1[2,f,c]*x1[2,j,f,c] - V1[1,f]*y1[1,j,f,c] - B1[f]*x1[1,j,f,c];
+			let M1dot[NT,f,c]:=V1[NT-1,f] - LT1[f] - D1[f];			
+			 let Mx1dot[NT,j,f,c]:=V1[NT-1,f]*y1[NT-1,j,f,c] - L1[NT,f,c]*x1[NT,j,f,c] - D1[f]*x1[NT,j,f,c];
+			 let Mx2dot[1,j,f,c]:=L2[2,f,c]*x2[2,j,f,c] - V2[1,f]*y2[1,j,f,c] - B2[f]*x2[1,j,f,c];
+			   let Mx2dot[NT,j,f,c]:=V2[NT-1,f]*y2[NT-1,j,f,c] - L2[NT,f,c]*x2[NT,j,f,c] - D2[f]*x2[NT,j,f,c];
+			for {i in 2..NF-1}{
+				let Mx2dot[i,j,f,c]:=L2[i+1,f,c]*x2[i+1,j,f,c] - L2[i,f,c]*x2[i,j,f,c] + V2[i-1,f]*y2[i-1,j,f,c] - V2[i,f]*y2[i,j,f,c];
+				let Mx1dot[i,j,f,c]:=L1[i+1,f,c]*x1[i+1,j,f,c] - L1[i,f,c]*x1[i,j,f,c] + V1[i-1,f]*y1[i-1,j,f,c] - V1[i,f]*y1[i,j,f,c];
+			};
+			for {i in NF+1..NT-1}{
+				let Mx2dot[i,j,f,c]:=L2[i+1,f,c]*x2[i+1,j,f,c] - L2[i,f,c]*x2[i,j,f,c] + V2[i-1,f]*y2[i-1,j,f,c] - V2[i,f]*y2[i,j,f,c];
+				let Mx1dot[i,j,f,c]:=L1[i+1,f,c]*x1[i+1,j,f,c] - L1[i,f,c]*x1[i,j,f,c] + V1[i-1,f]*y1[i-1,j,f,c] - V1[i,f]*y1[i,j,f,c];
+			};
+    let Mx2dot[NF,j,f,c]:=L2[NF+1,f,c]*x2[NF+1,j,f,c] - L2[NF,f,c]*x2[NF,j,f,c] + V2[NF-1,f]*y2[NF-1,j,f,c] - V2[NF,f]*y2[NF,j,f,c] + B1[f]*x1[1,j,f,c];
+let Mx1dot[NF,j,f,c]:=L1[NF+1,f,c]*x1[NF+1,j,f,c] - L1[NF,f,c]*x1[NF,j,f,c] + V1[NF-1,f]*y1[NF-1,j,f,c] - V1[NF,f]*y1[NF,j,f,c] + F*zF[j];		
+			for {i in 1..NT}{
+				let x1dot[i,j,f,c]:=(Mx1dot[i,j,f,c]-x1[i,j,f,c]*M1dot[i,f,c])/M1[i,f,c] ;
+				let x2dot[i,j,f,c]:=(Mx2dot[i,j,f,c]-x2[i,j,f,c]*M2dot[i,f,c])/M2[i,f,c];
+			};
+		};	
+    };
+};

@@ -1,0 +1,132 @@
+###########################################################################
+# RUN FILE COLUMN 1 AND 2 #################################################
+###########################################################################
+
+reset ;
+suffix sens_state_0, IN;
+suffix sens_state_1, IN;
+suffix sens_state_value_1, IN;
+suffix sens_sol_state_1, OUT;
+suffix sens_init_constr, IN;
+
+#----------------------
+# Set parameters
+#---------------------
+
+#include nominal_point.dat;
+  
+#-----------
+# Options
+#-----------
+
+#option solver "C:/ampl/ipopt";
+option solver ipopt_sens;
+
+option presolve 0;
+option ipopt_options 'run_sens yes'; 
+
+### load model
+model column2_dynamic.mod;
+data column2_dynamic_ams.dat;
+
+#include warm.inc;
+#include multipliersread.inc;
+include varread.inc;
+
+########
+# Solve
+########
+
+solve ;
+
+#########
+# Print
+##########
+
+#include warmsave.inc;
+include varsave.inc;
+#include multiplierssave.inc;
+
+
+shell "rm sresult.dat";
+#shell "open sresult.dat";
+printf:"%e ",solve_result_num>>sresult.dat;
+close sresult.dat;
+display solve_result_num, solve_result;
+
+shell "rm control.dat";
+for {i in fe}{
+printf:"%e ",LT1[i].sens_sol_state_1>>control.dat;
+printf:"%e ",VB1[i].sens_sol_state_1>>control.dat;
+printf:"%e ",LT2[i].sens_sol_state_1>>control.dat;
+printf:"%e ",VB2[i].sens_sol_state_1>>control.dat;
+printf:"%e ",D1[i,1].sens_sol_state_1>>control.dat;
+printf:"%e ",B1[i,1].sens_sol_state_1>>control.dat;
+printf:"%e ",D2[i,1].sens_sol_state_1>>control.dat;
+printf:"%e ",B2[i,1].sens_sol_state_1>>control.dat;
+printf:"%e ",F[i].sens_sol_state_1>>control.dat;
+printf:"%e ",qF[i].sens_sol_state_1>>control.dat;
+printf "\n">>control.dat;
+}
+close "control.dat";
+#display LT1,VB1,LT2,VB2;
+#display LT1.sens_sol_state_1,VB1.sens_sol_state_1,LT2.sens_sol_state_1,VB2.sens_sol_state_1;
+shell "rm M10.dat";
+shell "rm x10.dat";
+for {i in 1..NT}{
+for {k in fe}{
+        printf:"%e ",x1_0[i,1,k].sens_sol_state_1>>x10.dat;
+    }printf "\n">>x10.dat;
+}
+
+for {i in 1..NT}{
+for {k in fe}{
+        printf:"%e ",x1_0[i,2,k].sens_sol_state_1>>x10.dat;
+    }printf "\n">>x10.dat;
+}    
+
+
+for {i in 1..NT}{
+for {j in fe}{
+        printf:"%e ",M1_0[i,j].sens_sol_state_1>>M10.dat;
+
+}    printf "\n">>M10.dat;    
+}
+
+close M10.dat;
+close x10.dat;
+
+shell "rm M20.dat";
+shell "rm x20.dat";
+for {i in 1..NT}{
+for {k in fe}{
+        printf:"%e ",x2_0[i,1,k].sens_sol_state_1>>x20.dat;
+    }printf "\n">>x20.dat;
+}    
+for {i in 1..NT}{
+for {k in fe}{
+        printf:"%e ",x2_0[i,2,k].sens_sol_state_1>>x20.dat;
+    }printf "\n">>x20.dat;
+} 
+
+for {i in 1..NT}{
+for {j in fe}{
+        printf:"%e ",M2_0[i,j].sens_sol_state_1>>M20.dat;
+
+}    printf "\n">>M20.dat;    
+}
+
+close M20.dat;
+close x20.dat;
+
+
+shell "rm cost.dat";
+printf:"%e ",cost.sens_sol_state_1>>cost.dat;
+close cost.dat;
+
+shell "rm obj.dat";
+printf:"%e ",obj.sens_sol_state_1>>obj.dat;
+close obj.dat;
+
+#display D1,B1,D2,B2;
+#display L1,V1,L2,V2;

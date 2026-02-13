@@ -1,0 +1,8 @@
+#<-Do first
+regularize with more variables
+add gershgorin weights with 0-100% parameter
+add uncertainty 
+increase horizon?
+choose weights
+recreate xue's results
+final goal - compare desc con results against Xue's results, with varying sigma, with and without uncertainty

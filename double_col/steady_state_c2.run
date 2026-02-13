@@ -1,0 +1,38 @@
+for {j in 1..2}{
+for {i in 1..NT}{
+read x1ref[i,j]<ss_c2.dat;
+}}
+
+for {j in 1..2}{
+for {i in 1..NT}{
+read x2ref[i,j]<ss_c2.dat;
+}}
+
+for {i in 1..NT}{
+read M1ref[i]<ss_c2.dat;
+}
+
+for {i in 1..NT}{
+read M2ref[i]<ss_c2.dat;
+}
+
+let zF[1] := .4 ;
+let zF[2] := .4 ;
+let zF[3] := .2 ;
+
+#new control ref
+
+let D1ref := 0.553094;
+let D2ref := 0.580305;
+let B1ref := 0.856906;
+let B2ref := 0.276602;
+let LT1ref := 5.29703;
+let LT2ref := 2.19216;
+let VB1ref := 5.85012;
+let VB2ref := 2.77246;
+
+
+#new P
+read{i in s, j in s} P[i,j] < P_c2.txt;
+#new term reg
+let termnorm := termnorm_c2;

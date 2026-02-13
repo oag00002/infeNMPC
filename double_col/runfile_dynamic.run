@@ -1,0 +1,83 @@
+###########################################################################
+# RUN FILE COLUMN 1 AND 2 #################################################
+###########################################################################
+
+reset ;
+
+#----------------------
+# Set parameters
+#---------------------
+
+#include nominal_point.dat;
+  
+#-----------
+# Options
+#-----------
+
+#option solver "C:/ampl/ipopt";
+option solver ipopt;
+#option ipopt_options 'halt_on_ampl_error yes';
+#option show_stats 1 ;
+#option display_precision 0;
+#option ipopt_options 'tol 1e-2' ;
+#option ipopt_options 'linear_solver ma57';
+
+### turn presolve off;
+
+
+
+### load model
+model column2_dynamic_soft.mod;
+data column2_dynamic.dat;
+
+include warm0.inc;
+#include multipliersread.inc;
+include varread0.inc;
+option presolve 0;
+########
+# Solve
+########
+
+solve ;
+
+#########
+# Print
+##########
+
+include warmsave.inc;
+include varsave.inc;
+include multiplierssave.inc;
+
+shell "rm control.dat";
+for {i in fe}{
+printf:"%e ",LT1[i]>>control.dat;
+printf:"%e ",VB1[i]>>control.dat;
+printf:"%e ",LT2[i]>>control.dat;
+printf:"%e ",VB2[i]>>control.dat;
+printf:"%e ",D1[i,1]>>control.dat;
+printf:"%e ",B1[i,1]>>control.dat;
+printf:"%e ",D2[i,1]>>control.dat;
+printf:"%e ",B2[i,1]>>control.dat;
+printf:"%e ",F[i]>>control.dat;
+printf:"%e ",qF[i]>>control.dat;
+printf "\n">>control.dat;
+}
+close "control.dat";
+
+shell "rm cost.dat";
+shell "rm penalty.dat";
+shell "rm regu.dat";
+for {i in fe}{
+printf:"%e ",cost[i]>>cost.dat;
+printf:"%e ",penalty[i]>>penalty.dat;
+printf:"%e ",regu[i]>>regu.dat;
+}
+close cost.dat;
+close penalty.dat;
+close regu.dat;
+
+#display D1,B1,D2,B2;
+#display x1,x2,y1,y2;
+display zF;
+display F_w;
+display regu_1;
