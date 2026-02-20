@@ -134,7 +134,7 @@ param VB2_w;
 param LT1_w;
 param LT2_w;
 param TC1_w{1..NT};
-param TC2_w{1..NT}; 
+param TC2_w{1..NT};
 
 # Disturbances
 param F{fe} ; #feed

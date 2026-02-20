@@ -102,17 +102,17 @@ def _solve_steady_state_model(m, target, options):
     steady_state_data = ss_interface.get_data_at_time(m.time.first())
 
     # Extract MV and CV values from solved steady state
-    # steady_state_input_data = {
-    #     mv: steady_state_data.get_data_from_key(_get_variable_key_for_data(m, mv))
-    #     for mv in m.MV_index
-    # }
-    # steady_state_output_data = {
-    #     cv: steady_state_data.get_data_from_key(_get_variable_key_for_data(m, cv))
-    #     for cv in m.CV_index
-    # }
-    # steady_state_values = {**steady_state_output_data, **steady_state_input_data}
+    steady_state_input_data = {
+        mv: steady_state_data.get_data_from_key(_get_variable_key_for_data(m, mv))
+        for mv in m.MV_index
+    }
+    steady_state_output_data = {
+        cv: steady_state_data.get_data_from_key(_get_variable_key_for_data(m, cv))
+        for cv in m.CV_index
+    }
+    steady_state_values = {**steady_state_output_data, **steady_state_input_data}
 
-    # print(steady_state_values)
+    print(steady_state_values)
 
     return steady_state_data
 
@@ -673,9 +673,17 @@ if __name__ == '__main__':
     options = _import_settings()
     m = pyo.ConcreteModel()
 
+    m_ss = pyo.ConcreteModel()
+    print('\nTesting Steady State Model Setup and Solution')
+    m_ss = _make_steady_state_model(m_ss, options)
+    if True:  # Toggle to False to disable model display
+        with open("model_output.txt", "w") as f:
+            m_ss.pprint(ostream=f)
+    m_ss = _solve_steady_state_model(m_ss, None, options)
+
     # Test full model creation with discretization
-    print('\nTesting Infinite Horizon Model Setup')
-    m = _make_finite_horizon_model(m, options)
+    # print('\nTesting Infinite Horizon Model Setup')
+    # m = _make_finite_horizon_model(m, options)
     # try:
     # _make_finite_horizon_model(m, options)
     # print('Model Setup and Discretization Successful')
@@ -684,6 +692,6 @@ if __name__ == '__main__':
 
     if True:  # Toggle to False to disable model display
         with open("model_output.txt", "w") as f:
-            m.pprint(ostream=f)
+            m_ss.pprint(ostream=f)
 
     assert isinstance(m, pyo.ConcreteModel)

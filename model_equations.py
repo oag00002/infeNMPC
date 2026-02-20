@@ -2,6 +2,8 @@ import pyomo.environ as pyo
 from pyomo.dae import DerivativeVar, ContinuousSet
 from pyomo.core.expr import sqrt
 
+from infNMPC_options import _import_settings
+
 
 def variables_initialize(m):
     """
@@ -14,27 +16,28 @@ def variables_initialize(m):
     Components: A (light), B (medium), C (heavy)
     Relative volatilities: alpha_A = 2.0, alpha_B = 1.5 (relative to C)
     """
-    print('Initializing Variables')
-
-    # ---- Time Units ----
-    m.time_display_name = ["Time (h)"]
-
     # ---- Variable Type Indexing ----
-    m.MV_index = pyo.Set(initialize=["VB1", "LT1", "D1", "B1", "VB2", "LT2", "D2", "B2"])
-    m.MV_display_names = ["VB_1", "LT_1", "D_1", "B_1", "VB_2", "LT_2", "D_2", "B_2"]
+    m.MV_index = pyo.Set(initialize=["VB1", "LT1", "VB2", "LT2"])
     m.CV_index = pyo.Set(initialize=["x1[41,1]", "x2[41,2]", "xC"])
+    m.DV_index = pyo.Set(initialize=["F", "qF", "pV", "zF[1]", "zF[2]"])
+
+    m.time_display_name = ["Time (h)"]
+    m.MV_display_names = ["VB_1", "LT_1", "VB_2", "LT_2"]
     m.CV_display_names = ["x_{D1,A}", "x_{D2,B}", "x_{B2,C}"]
-    m.DV_index = pyo.Set(initialize=["F", "qF"])
 
     # ---- System Parameters ----
     m.NT = pyo.Param(initialize=41)  # Number of trays
     m.NC = pyo.Param(initialize=3)   # Number of components
     m.NF = pyo.Param(initialize=21)  # Feed tray location
     m.tray = pyo.Set(initialize=range(1, 42))  # Tray indices 1..41
-    m.comp = pyo.Set(initialize=[1, 2])  # Component indices (1=A, 2=B, C is calculated)
+    m.vapor_trays = pyo.Set(initialize=range(1, 41))  # Vapor flow defined on trays 1..40
+    m.liquid_trays = pyo.Set(initialize=range(2, 42))  # Liquid flow defined on trays 2..41
+    m.comp_all = pyo.Set(initialize=[1, 2, 3])  # Component indices (1=A, 2=B, 3=C)
+    m.comp = pyo.Set(initialize=[1, 2])
 
     # ---- Relative Volatilities ----
-    m.alpha = pyo.Param(m.comp, initialize={1: 2.0, 2: 1.5})
+    m.alpha = pyo.Param({1, 2}, initialize={1: 2.0, 2: 1.5})
+    m.m_alpha = pyo.Param({1, 2}, {1, 2}, initialize=lambda m, i, j: m.alpha[i] if i == j else 0)  # Relative volatility matrix (alpha[i] if i==j else 0)
 
     # ---- Francis Weir Formula Parameters ----
     m.Kuf = pyo.Param(initialize=21.65032)  # Constant above feed
@@ -42,69 +45,96 @@ def variables_initialize(m):
     m.Muw = pyo.Param(initialize=0.25)      # Liquid holdup under weir (kmol)
 
     # ---- Feed Parameters (Disturbances) ----
-    m.F = pyo.Param(initialize=1.4, mutable=True)     # Feed flow rate
-    m.qF = pyo.Param(initialize=1.0, mutable=True)    # Feed liquid fraction
-    m.zF = pyo.Param(m.comp, initialize={1: 0.4, 2: 0.2}, mutable=True)  # Feed composition (A, B)
+    m.F = pyo.Param(m.time, initialize=1.4, mutable=True)     # Feed flow rate
+    m.qF = pyo.Param(m.time, initialize=1.0, mutable=True)    # Feed liquid fraction
+    m.zF = pyo.Param(m.comp, m.time, initialize=lambda m, i, t: 0.4 if i == 1 else 0.2, mutable=True)  # Feed composition (A, B)
 
-    # ---- Column 1 State Variables ----
-    def _x1_init(m, k, j, i):
-        """Initialize liquid composition in Column 1"""
-        if k <= 16:
-            return 0.999 * k / 41
-        else:
-            return 0.36 + (0.98 - 0.36) / (41 - 21 - 1) * (k - 21 - 1)
+    # ---- Consistent steady-state initialization ----
+    # clip ≈ M - Muw  (for M > Muw, since sqrt((M-Muw)^2+eps) ≈ M-Muw)
+    # L = K * clip^1.5  →  M = Muw + (L/K)^(2/3)
+    #
+    # Column 1: VB1=4.008, LT1=3.437, F=1.4, qF=1 → D1 = VB1-LT1 = 0.571, B1 = F-D1 = 0.829
+    # Below-feed liquid (k=2..21): L1_bf = LT1 + qF*F = 3.437 + 1.4 = 4.837
+    #   Weir (Kbf): M1_bf = 0.25 + (4.837/29.65)^(2/3) ≈ 0.548
+    # Above-feed liquid (k=22..41): L1_uf = LT1 = 3.437
+    #   Weir (Kuf): M1_uf = 0.25 + (3.437/21.65)^(2/3) ≈ 0.543
+    #
+    # Column 2: VB2=2.40367, LT2=2.13827, B1=0.829 (all-liquid feed from Col-1 bottoms)
+    # → D2 = VB2-LT2 = 0.265, B2 = B1-D2 = 0.564
+    # Below-feed liquid (k=2..21): L2_bf = LT2 + B1 = 2.138 + 0.829 = 2.967
+    #   Weir (Kbf): M2_bf = 0.25 + (2.967/29.65)^(2/3) ≈ 0.465
+    # Above-feed liquid (k=22..41): L2_uf = LT2 = 2.138
+    #   Weir (Kuf): M2_uf = 0.25 + (2.138/21.65)^(2/3) ≈ 0.464
+    #
+    # VLE at x1=x2=0.4: num=(0.8,0.6), den=0.4*(2-1)+0.4*(1.5-1)+1=1.6 → y=(0.5,0.375)
+    # TC = 0.4*353.3 + 0.4*383.8 + 0.2*411.5 = 377.14
+    # xC = 1 - x2[1,1] - x2[1,2] = 1 - 0.4 - 0.4 = 0.2
+    _M1_bf = 0.5482  # Col-1 holdup below feed  (weir-consistent with L=4.837)
+    _M1_uf = 0.5433  # Col-1 holdup above feed  (weir-consistent with L=3.437)
+    _L1_bf = 4.837   # Col-1 liquid below feed  (= LT1 + qF*F, material-balance consistent)
+    _L1_uf = 3.437   # Col-1 liquid above feed  (= LT1)
+    _M2_bf = 0.4655  # Col-2 holdup below feed  (weir-consistent with L=2.967)
+    _M2_uf = 0.4636  # Col-2 holdup above feed  (weir-consistent with L=2.138)
+    _L2_bf = 2.967   # Col-2 liquid below feed  (= LT2 + B1, material-balance consistent)
+    _L2_uf = 2.138   # Col-2 liquid above feed  (= LT2)
 
-    def _M1_init(m, k, i):
-        """Initialize liquid holdup in Column 1"""
-        if k == 1:
-            return 2 * 0.5
-        elif 2 <= k <= 21:
-            return 0.4 + (0.5 - 0.4) / (21 - 2) * (k - 2)
-        else:
-            return 0.4 + (0.6 - 0.4) / (41 - 21 - 1) * (k - 21 - 1)
+    # Component Fraction, Liquid and Vapor Holdup Variables for Column 1
+    m.y1 = pyo.Var(m.vapor_trays, m.comp, m.time, initialize = 0.3)
+                   # bounds=(0,1), initialize=lambda m, k, j, t: 0.5 if j == 1 else 0.375)
+    m.x1 = pyo.Var(m.tray, m.comp, m.time, initialize=0.4) #, bounds=(0, 1))
+    m.M1 = pyo.Var(m.tray, m.time, initialize=0.5)
+                   # bounds=(0.01, None), initialize=lambda m, k, t: _M1_bf if k <= 21 else _M1_uf)
+    m.V1 = pyo.Var(m.vapor_trays, m.time, initialize=1) # initialize=4.008)
+    m.L1 = pyo.Var(m.liquid_trays, m.time, initialize=1)
+                   # initialize=lambda m, k, t: _L1_bf if k <= 21 else _L1_uf)
+    m.D1 = pyo.Var(m.time, initialize=0.57) # 0.571)
+    m.B1 = pyo.Var(m.time, initialize=0.83) # 0.829)
 
-    m.x1 = pyo.Var(m.tray, m.comp, m.time, initialize=_x1_init, bounds=(0, 1))
+    # Slack Variables for Column 1
+    m.x1eps = pyo.Var(m.tray, m.comp, m.time, domain=pyo.NonNegativeReals)
+    m.M1eps = pyo.Var(m.tray, m.time, domain=pyo.NonNegativeReals)
+    m.V1eps = pyo.Var(m.vapor_trays, m.time, domain=pyo.NonNegativeReals)
+    m.L1eps = pyo.Var(m.liquid_trays, m.time, domain=pyo.NonNegativeReals)
+    m.D1eps = pyo.Var(m.time, domain=pyo.NonNegativeReals)
+    m.B1eps = pyo.Var(m.time, domain=pyo.NonNegativeReals)
+    m.TC1eps = pyo.Var(m.tray, m.time, domain=pyo.NonNegativeReals)
 
-    def _M1_bounds(m, k, t):
-        """Holdup bounds - reboiler (tray 1) has larger capacity"""
-        if k == 1:
-            return (0.5, 2.0)
-        else:
-            return (0.25, 0.75)
+    # VLE equation split for Column 1
+    m.y1_num = pyo.Var(m.vapor_trays, m.comp, m.time, initialize=0.2)
+                       # initialize=lambda m, k, j, t: 0.8 if j == 1 else 0.6)
+    m.y1_den = pyo.Var(m.vapor_trays, m.comp, m.time, initialize=0.7) # initialize=1.6)
+    m.TC1 = pyo.Var(m.tray, m.time, initialize=380) # 377.14)
 
-    m.M1 = pyo.Var(m.tray, m.time, initialize=_M1_init, bounds=_M1_bounds)
+    # Component Fraction, Liquid and Vapor Holdup Variables for Column 2
+    m.y2 = pyo.Var(m.vapor_trays, m.comp, m.time, initialize=0.5)
+                   # bounds=(0, 1), initialize=lambda m, k, j, t: 0.5 if j == 1 else 0.375)
+    m.x2 = pyo.Var(m.tray, m.comp, m.time, initialize=0.4) # , bounds=(0, 1))
+    m.M2 = pyo.Var(m.tray, m.time, initialize=0.5) 
+                   # bounds=(0.01, None), initialize=lambda m, k, t: _M2_bf if k <= 21 else _M2_uf)
+    m.V2 = pyo.Var(m.vapor_trays, m.time, initialize=1) # initialize=2.40367)
+    m.L2 = pyo.Var(m.liquid_trays, m.time, initialize=1)
+                   # initialize=lambda m, k, t: _L2_bf if k <= 21 else _L2_uf)
+    m.D2 = pyo.Var(m.time, initialize=0.26) # 0.265)
+    m.B2 = pyo.Var(m.time, initialize=0.56) # 0.564)
+
+    # Slack Variables for Column 2
+    m.x2eps = pyo.Var(m.tray, m.comp, m.time, domain=pyo.NonNegativeReals)
+    m.M2eps = pyo.Var(m.tray, m.time, domain=pyo.NonNegativeReals)
+    m.V2eps = pyo.Var(m.vapor_trays, m.time, domain=pyo.NonNegativeReals)
+    m.L2eps = pyo.Var(m.liquid_trays, m.time, domain=pyo.NonNegativeReals)
+    m.D2eps = pyo.Var(m.time, domain=pyo.NonNegativeReals)
+    m.B2eps = pyo.Var(m.time, domain=pyo.NonNegativeReals)
+    m.TC2eps = pyo.Var(m.tray, m.time, domain=pyo.NonNegativeReals)
+
+    # VLE equation split for Column 2
+    m.y2_num = pyo.Var(m.vapor_trays, m.comp, m.time, initialize = 0.3)
+                       # initialize=lambda m, k, j, t: 0.8 if j == 1 else 0.6)
+    m.y2_den = pyo.Var(m.vapor_trays, m.comp, m.time, initialize=0.8) # 1.6)
+    m.TC2 = pyo.Var(m.tray, m.time, initialize=380) # 377.14)
 
     # ---- Column 1 Derivative Variables ----
     m.x1dot = DerivativeVar(m.x1, initialize=0.0)
     m.M1dot = DerivativeVar(m.M1, initialize=0.0)
-
-    # ---- Column 2 State Variables ----
-    def _x2_init(m, k, j, i):
-        """Initialize liquid composition in Column 2"""
-        if k <= 16:
-            return 0.5 * k / 41
-        else:
-            return 0.3 + (0.7 - 0.3) / (41 - 21 - 1) * (k - 21 - 1)
-
-    def _M2_init(m, k, i):
-        """Initialize liquid holdup in Column 2"""
-        if k == 1:
-            return 2 * 0.5
-        elif 2 <= k <= 21:
-            return 0.4 + (0.5 - 0.4) / (21 - 2) * (k - 2)
-        else:
-            return 0.4 + (0.6 - 0.4) / (41 - 21 - 1) * (k - 21 - 1)
-
-    m.x2 = pyo.Var(m.tray, m.comp, m.time, initialize=_x2_init, bounds=(0, 1))
-
-    def _M2_bounds(m, k, t):
-        """Holdup bounds - reboiler (tray 1) has larger capacity"""
-        if k == 1:
-            return (0.5, 2.0)
-        else:
-            return (0.25, 0.75)
-
-    m.M2 = pyo.Var(m.tray, m.time, initialize=_M2_init, bounds=_M2_bounds)
 
     # ---- Column 2 Derivative Variables ----
     m.x2dot = DerivativeVar(m.x2, initialize=0.0)
@@ -112,24 +142,14 @@ def variables_initialize(m):
 
     # ---- Column 1 Manipulated Variables ----
     m.VB1 = pyo.Var(m.time, initialize=4.008, bounds=(0, 10))    # Boilup
-    m.LT1 = pyo.Var(m.time, initialize=3.437, bounds=(0, 10))    # Reflux
-    m.D1 = pyo.Var(m.time, initialize=0.57, bounds=(0, 5))       # Distillate
-    m.B1 = pyo.Var(m.time, initialize=0.83, bounds=(0, 5))       # Bottoms
+    m.LT1 = pyo.Var(m.time, initialize=3.43656, bounds=(0, 10))    # Reflux
 
     # ---- Column 2 Manipulated Variables ----
-    m.VB2 = pyo.Var(m.time, initialize=2.404, bounds=(0, 10))    # Boilup
-    m.LT2 = pyo.Var(m.time, initialize=2.138, bounds=(0, 10))    # Reflux
-    m.D2 = pyo.Var(m.time, initialize=0.26, bounds=(0, 5))       # Distillate
-    m.B2 = pyo.Var(m.time, initialize=0.56, bounds=(0, 5))       # Bottoms
+    m.VB2 = pyo.Var(m.time, initialize=2.40367, bounds=(0, 10))    # Boilup
+    m.LT2 = pyo.Var(m.time, initialize=2.13827, bounds=(0, 10))    # Reflux
 
-    # ---- Algebraic Variables (Vapor flows - constant molar overflow) ----
-    m.V1 = pyo.Var(m.tray, m.time, initialize=4.0, bounds=(0, 20))
-    m.V2 = pyo.Var(m.tray, m.time, initialize=2.4, bounds=(0, 20))
-
-    # ---- Computed Controlled Variable (C purity in Column 2 bottoms) ----
-    # xC = 1 - xA - xB at bottom of column 2
-    # This is defined as a Variable with a Constraint, not an Expression
-    m.xC = pyo.Var(m.time, initialize=0.90, bounds=(0, 1))
+    # ---- Column 2 C Composition CV ----
+    m.xC = pyo.Var(m.time, initialize=0.2)  # xC = 1-x2[1,1]-x2[1,2]; at x2=0.4: 1-0.4-0.4=0.2
 
     # ---- Setpoints for CVs (product purities) ----
     m.setpoints = pyo.Param(m.CV_index, initialize={
@@ -158,11 +178,6 @@ def equations_write(m):
     - Vapor flow relations (constant molar overflow)
     - Liquid flow relations (Francis weir formula)
     """
-    print('Writing Model Equations')
-
-    def clipping(x):
-        """Smooth approximation of max(x, 0)"""
-        return 0.5 * (x + sqrt(x**2 + 1e-8))
 
     # ========================================================================
     # COLUMN 1 EQUATIONS
@@ -172,229 +187,288 @@ def equations_write(m):
     # Using multicomponent ideal VLE with relative volatilities
     # y[i,j] = alpha[j] * x[i,j] / (alpha[1]*x[i,1] + alpha[2]*x[i,2] + 1*(1-x[i,1]-x[i,2]))
 
-    m.y1 = {}  # Vapor composition (algebraic)
-    for i in m.time:
-        for k in range(1, 41):  # Trays 1..40 (not tray 41, which is total condenser)
-            for j in m.comp:
-                m.y1[k, j, i] = (m.alpha[j] * m.x1[k, j, i]) / (
-                    m.alpha[1] * m.x1[k, 1, i] +
-                    m.alpha[2] * m.x1[k, 2, i] +
-                    (1 - m.x1[k, 1, i] - m.x1[k, 2, i])
-                )
+    # ---- Soft Constraints for Column 1 ----
+    def x1lower_rule(m, k, j, t):
+        """Lower bound on liquid composition (with slack)"""
+        return m.x1[k, j, t] >= 0 - m.x1eps[k, j, t]
+    m.x1_lower = pyo.Constraint(m.tray, m.comp, m.time, rule=x1lower_rule)
 
-    # ---- Vapor Flows (Constant Molar Overflow) ----
-    def V1_below_feed_rule(m, k, t):
-        """Vapor flow below feed tray"""
+    def M1lower_rule(m, k, t):
+        """Lower bound on holdup (with slack)"""
+        return m.M1[k, t] >= 0.25 - m.M1eps[k, t]
+    m.M1_lower = pyo.Constraint(m.tray, m.time, rule=M1lower_rule)
+
+    def M1upper_rule(m, k, t):
+        """Upper bound on holdup (with slack)"""
+        return m.M1[k, t] <= 0.75 + m.M1eps[k, t]
+    m.M1_upper = pyo.Constraint(m.tray, m.time, rule=M1upper_rule)
+
+    def V1lower_rule(m, k, t):
+        """Lower bound on vapor flow (with slack)"""
+        return m.V1[k, t] >= 0 - m.V1eps[k, t]
+    m.V1_lower = pyo.Constraint(m.vapor_trays, m.time, rule=V1lower_rule)
+
+    def L1lower_rule(m, k, t):
+        """Lower bound on liquid flow (with slack)"""
+        return m.L1[k, t] >= 0 - m.L1eps[k, t]
+    m.L1_lower = pyo.Constraint(m.liquid_trays, m.time, rule=L1lower_rule)
+
+    def D1lower_rule(m, t):
+        """Lower bound on distillate flow (with slack)"""
+        return m.D1[t] >= 0 - m.D1eps[t]
+    m.D1_lower = pyo.Constraint(m.time, rule=D1lower_rule)
+
+    def B1lower_rule(m, t):
+        """Lower bound on bottoms flow (with slack)"""
+        return m.B1[t] >= 0 - m.B1eps[t]
+    m.B1_lower = pyo.Constraint(m.time, rule=B1lower_rule)
+
+    # ---- Hard Constraints on TC1 (tray temperature) ----
+    def TC1lower_rule(m, k, t):
+        """Lower bound on tray temperature (with slack)"""
+        return m.TC1[k, t] >= 350
+    m.TC1_lower = pyo.Constraint(m.tray, m.time, rule=TC1lower_rule)
+
+    def TC1upper_rule(m, k, t):
+        """Upper bound on tray temperature (with slack)"""
+        return m.TC1[k, t] <= 450
+    m.TC1_upper = pyo.Constraint(m.tray, m.time, rule=TC1upper_rule)
+
+    # ---- VLE Equations for Column 1 ----
+    def const1_rule(m, k, j, t):
+        """VLE equation numerator"""
+        return m.y1_num[k, j, t] == m.x1[k, j, t] * m.m_alpha[j,j]
+    m.const1 = pyo.Constraint(m.vapor_trays, m.comp, m.time, rule=const1_rule)
+
+    def const2_rule(m, k, j, t):
+        """VLE equation denominator"""
+        return m.y1_den[k, j, t] == ((m.x1[k, 1, t] * (m.alpha[1] - 1) + m.x1[k, 2, t]*(m.alpha[2] - 1)) + 1)
+    m.const2 = pyo.Constraint(m.vapor_trays, m.comp, m.time, rule=const2_rule)
+
+    def const3_rule(m, k, j, t):
+        """VLE equation"""
+        return m.y1[k, j, t] * m.y1_den[k, j, t] == m.y1_num[k, j, t]
+    m.const3 = pyo.Constraint(m.vapor_trays, m.comp, m.time, rule=const3_rule)
+
+    # ---- Vapor flows assuming constant molar flow for Column 1 ----
+    def const4_rule(m, k, t):
+        """Vapor flow"""
         if 1 <= k <= m.NF - 1:
-            return m.V1[k, t] == m.VB1[t]
+            return m.V1[k, t] == m.VB1[t] # Below feed, constant vapor flow equal to boilup
+        elif m.NF <= k <= m.NT - 1:
+            return m.V1[k, t] == m.VB1[t] + (1 - m.qF[t]) * m.F[t] # Above feed, vapor flow increases by vapor portion of feed
         else:
             return pyo.Constraint.Skip
-
-    def V1_above_feed_rule(m, k, t):
-        """Vapor flow above feed tray"""
-        if m.NF <= k <= 40:
-            return m.V1[k, t] == m.VB1[t] + (1 - m.qF) * m.F
+    m.const4 = pyo.Constraint(m.vapor_trays, m.time, rule=const4_rule)
+    
+    # ---- Liquid flows using Francis Weir formula for Column 1 ----
+    def const6_rule(m, k, t):
+        """Liquid flow using Francis Weir formula"""
+        if 2 <= k <= m.NF:
+            # Below feed
+            return m.L1[k, t] == m.Kbf * ( ( m.M1[k,t] - m.Muw + sqrt((m.M1[k, t] - m.Muw)**2 + 10**(-8))) / 2 ) **1.5
+        elif m.NF + 1 <= k <= 40:
+            # Above feed
+            return m.L1[k, t] == m.Kuf * ( ( m.M1[k,t] - m.Muw + sqrt((m.M1[k,t] - m.Muw)**2 + 10**(-8))) / 2 ) **1.5
+        elif k == 41:
+            # Condenser's liquid flow
+            return m.L1[k, t] == m.LT1[t]
         else:
             return pyo.Constraint.Skip
+    m.const6 = pyo.Constraint(m.liquid_trays, m.time, rule=const6_rule)
 
-    m.V1_below_feed = pyo.Constraint(m.tray, m.time, rule=V1_below_feed_rule)
-    m.V1_above_feed = pyo.Constraint(m.tray, m.time, rule=V1_above_feed_rule)
-
-    # ---- Liquid Flows (Francis Weir Formula) ----
-    m.L1 = {}  # Liquid flow (algebraic)
-    for i in m.time:
-        for k in m.tray:
-            if 2 <= k <= m.NF:
-                # Below feed
-                m.L1[k, i] = m.Kbf * clipping(m.M1[k, i] - m.Muw)**1.5
-            elif m.NF + 1 <= k <= 40:
-                # Above feed
-                m.L1[k, i] = m.Kuf * clipping(m.M1[k, i] - m.Muw)**1.5
-            elif k == 41:
-                # Top tray (reflux)
-                m.L1[k, i] = m.LT1[i]
-
-    # ---- Material Balances Column 1 ----
-    def M1_balance_rule(m, k, t):
-        """Total material balance for each tray"""
+    # ---- Material balances for total holdup and component holdup for Column 1 ----
+    def const11_rule(m, k, t):
+        """Material balances for total holoup"""
         if k == 1:
             # Reboiler
-            return m.M1dot[1, t] == m.L1[2, t] - m.V1[1, t] - m.B1[t]
+            return m.M1dot[k, t] == m.L1[2,t] - m.V1[1,t] - m.B1[t]
         elif 2 <= k <= m.NF - 1:
             # Below feed
             return m.M1dot[k, t] == m.L1[k + 1, t] - m.L1[k, t] + m.V1[k - 1, t] - m.V1[k, t]
         elif k == m.NF:
             # Feed tray
-            return m.M1dot[k, t] == m.L1[k + 1, t] - m.L1[k, t] + m.V1[k - 1, t] - m.V1[k, t] + m.F
-        elif m.NF + 1 <= k <= 40:
+            return m.M1dot[k, t] == m.L1[k + 1, t] - m.L1[k, t] + m.V1[k - 1, t] - m.V1[k, t] + m.F[t]
+        elif m.NF + 1 <= k <= m.NT - 1:
             # Above feed
-            return m.M1dot[k, t] == m.L1[k + 1, t] - m.L1[k, t] + m.V1[k - 1, t] - m.V1[k, t]
-        elif k == 41:
+            return m.M1dot[k, t] == m.L1[k + 1, t] - m.L1[k, t] + m.V1[k - 1, t] - m.V1[k, t] # Same as below feed
+        elif k == m.NT:
             # Total condenser
-            return m.M1dot[41, t] == m.V1[40, t] - m.LT1[t] - m.D1[t]
+            return m.M1dot[k, t] == m.V1[k - 1, t] - m.LT1[t] - m.D1[t]
         else:
             return pyo.Constraint.Skip
+    m.const11 = pyo.Constraint(m.tray, m.time, rule=const11_rule)
 
-    m.M1_balance = pyo.Constraint(m.tray, m.time, rule=M1_balance_rule)
-
-    # ---- Component Material Balances Column 1 ----
-    m.Mx1dot = {}  # Component holdup derivative (algebraic)
-    for i in m.time:
-        for k in m.tray:
-            for j in m.comp:
-                if k == 1:
-                    # Reboiler
-                    m.Mx1dot[k, j, i] = (
-                        m.L1[2, i] * m.x1[2, j, i] -
-                        m.V1[1, i] * m.y1[1, j, i] -
-                        m.B1[i] * m.x1[1, j, i]
-                    )
-                elif 2 <= k <= m.NF - 1:
-                    # Below feed
-                    m.Mx1dot[k, j, i] = (
-                        m.L1[k + 1, i] * m.x1[k + 1, j, i] - m.L1[k, i] * m.x1[k, j, i] +
-                        m.V1[k - 1, i] * m.y1[k - 1, j, i] - m.V1[k, i] * m.y1[k, j, i]
-                    )
-                elif k == m.NF:
-                    # Feed tray
-                    m.Mx1dot[k, j, i] = (
-                        m.L1[k + 1, i] * m.x1[k + 1, j, i] - m.L1[k, i] * m.x1[k, j, i] +
-                        m.V1[k - 1, i] * m.y1[k - 1, j, i] - m.V1[k, i] * m.y1[k, j, i] +
-                        m.F * m.zF[j]
-                    )
-                elif m.NF + 1 <= k <= 40:
-                    # Above feed
-                    m.Mx1dot[k, j, i] = (
-                        m.L1[k + 1, i] * m.x1[k + 1, j, i] - m.L1[k, i] * m.x1[k, j, i] +
-                        m.V1[k - 1, i] * m.y1[k - 1, j, i] - m.V1[k, i] * m.y1[k, j, i]
-                    )
-                elif k == 41:
-                    # Total condenser (no VLE, y = x at top)
-                    m.Mx1dot[k, j, i] = (
-                        m.V1[40, i] * m.y1[40, j, i] -
-                        m.L1[41, i] * m.x1[41, j, i] -
-                        m.D1[i] * m.x1[41, j, i]
-                    )
-
-    def x1dot_rule(m, k, j, t):
-        """Derivative of liquid composition"""
-        return m.x1dot[k, j, t] * m.M1[k, t] == m.Mx1dot[k, j, t] - m.x1[k, j, t] * m.M1dot[k, t]
-
-    m.x1dot_balance = pyo.Constraint(m.tray, m.comp, m.time, rule=x1dot_rule)
+    def const13_rule(m, k, j, t):
+        """Material balances for component holdup"""
+        if k == 1:
+            # Reboiler
+            return m.x1dot[k, j, t] * m.M1[k, t] + m.M1dot[k, t] * m.x1[k, j, t] == m.L1[2, t] * m.x1[2, j, t] - m.V1[1, t] * m.y1[1, j, t] - m.B1[t] * m.x1[1, j, t]
+        elif 2 <= k <= m.NF - 1:
+            # Below feed
+            return m.x1dot[k, j, t] * m.M1[k, t] + m.M1dot[k, t] * m.x1[k, j, t] == m.L1[k + 1, t] * m.x1[k + 1, j, t] - m.L1[k, t] * m.x1[k, j, t] + m.V1[k - 1, t] * m.y1[k - 1, j, t] - m.V1[k, t] * m.y1[k, j, t]
+        elif k == m.NF:
+            # Feed tray
+            return m.x1dot[k, j, t] * m.M1[k, t] + m.M1dot[k, t] * m.x1[k, j, t] == m.L1[k + 1, t] * m.x1[k + 1, j, t] - m.L1[k, t] * m.x1[k, j, t] + m.V1[k - 1, t] * m.y1[k - 1, j, t] - m.V1[k, t] * m.y1[k, j, t] + m.F[t] * m.zF[j, t]
+        elif m.NF + 1 <= k <= m.NT - 1:
+            # Above feed
+            return m.x1dot[k, j, t] * m.M1[k, t] + m.M1dot[k, t] * m.x1[k, j, t] == m.L1[k + 1, t] * m.x1[k + 1, j, t] - m.L1[k, t] * m.x1[k, j, t] + m.V1[k - 1, t] * m.y1[k - 1, j, t] - m.V1[k, t] * m.y1[k, j, t]
+        elif k == m.NT:
+            # Total condenser
+            return m.x1dot[k, j, t] * m.M1[k, t] + m.M1dot[k, t] * m.x1[k, j, t] == m.V1[k - 1, t] * m.y1[k - 1, j, t] - m.L1[k, t] * m.x1[k, j, t] - m.D1[t] * m.x1[k, j, t]
+        else:
+            return pyo.Constraint.Skip
+    m.const13 = pyo.Constraint(m.tray, m.comp, m.time, rule=const13_rule)
 
     # ========================================================================
     # COLUMN 2 EQUATIONS
     # ========================================================================
 
     # ---- Vapor-Liquid Equilibrium (VLE) for Column 2 ----
-    m.y2 = {}  # Vapor composition (algebraic)
-    for i in m.time:
-        for k in range(1, 41):
-            for j in m.comp:
-                m.y2[k, j, i] = (m.alpha[j] * m.x2[k, j, i]) / (
-                    m.alpha[1] * m.x2[k, 1, i] +
-                    m.alpha[2] * m.x2[k, 2, i] +
-                    (1 - m.x2[k, 1, i] - m.x2[k, 2, i])
-                )
+    # Using multicomponent ideal VLE with relative volatilities
+    # y[i,j] = alpha[j] * x[i,j] / (alpha[1]*x[i,1] + alpha[2]*x[i,2] + 1*(1-x[i,1]-x[i,2]))
 
-    # ---- Vapor Flows (Constant Molar Overflow) ----
-    def V2_flow_rule(m, k, t):
-        """Vapor flow in Column 2 (no feed, so constant throughout)"""
-        if 1 <= k <= 40:
-            return m.V2[k, t] == m.VB2[t]
-        else:
-            return pyo.Constraint.Skip
+    # ---- Soft Constraints for Column 2 ----
+    def x2lower_rule(m, k, j, t):
+        """Lower bound on liquid composition (with slack)"""
+        return m.x2[k, j, t] >= 0 - m.x2eps[k, j, t]
+    m.x2_lower = pyo.Constraint(m.tray, m.comp, m.time, rule=x2lower_rule)
 
-    m.V2_flow = pyo.Constraint(m.tray, m.time, rule=V2_flow_rule)
+    def M2lower_rule(m, k, t):
+        """Lower bound on holdup (with slack)"""
+        return m.M2[k, t] >= 0.25 - m.M2eps[k, t]
+    m.M2_lower = pyo.Constraint(m.tray, m.time, rule=M2lower_rule)
 
-    # ---- Liquid Flows (Francis Weir Formula) ----
-    m.L2 = {}  # Liquid flow (algebraic)
-    for i in m.time:
-        for k in m.tray:
-            if 2 <= k <= m.NF:
-                # Below "feed" (which is B1 from column 1 at tray NF)
-                m.L2[k, i] = m.Kbf * clipping(m.M2[k, i] - m.Muw)**1.5
-            elif m.NF + 1 <= k <= 40:
-                # Above feed
-                m.L2[k, i] = m.Kuf * clipping(m.M2[k, i] - m.Muw)**1.5
-            elif k == 41:
-                # Top tray (reflux)
-                m.L2[k, i] = m.LT2[i]
+    def M2upper_rule(m, k, t):
+        """Upper bound on holdup (with slack)"""
+        return m.M2[k, t] <= 0.75 + m.M2eps[k, t]
+    m.M2_upper = pyo.Constraint(m.tray, m.time, rule=M2upper_rule)
 
-    # ---- Material Balances Column 2 ----
-    def M2_balance_rule(m, k, t):
-        """Total material balance for each tray"""
-        if k == 1:
-            # Reboiler
-            return m.M2dot[1, t] == m.L2[2, t] - m.V2[1, t] - m.B2[t]
-        elif 2 <= k <= m.NF - 1:
-            # Below feed from Column 1
-            return m.M2dot[k, t] == m.L2[k + 1, t] - m.L2[k, t] + m.V2[k - 1, t] - m.V2[k, t]
-        elif k == m.NF:
-            # Feed tray (receives B1 from Column 1)
-            return m.M2dot[k, t] == m.L2[k + 1, t] - m.L2[k, t] + m.V2[k - 1, t] - m.V2[k, t] + m.B1[t]
+    def V2lower_rule(m, k, t):
+        """Lower bound on vapor flow (with slack)"""
+        return m.V2[k, t] >= 0 - m.V2eps[k, t]
+    m.V2_lower = pyo.Constraint(m.vapor_trays, m.time, rule=V2lower_rule)
+
+    def L2lower_rule(m, k, t):
+        """Lower bound on liquid flow (with slack)"""
+        return m.L2[k, t] >= 0 - m.L2eps[k, t]
+    m.L2_lower = pyo.Constraint(m.liquid_trays, m.time, rule=L2lower_rule)
+
+    def D2lower_rule(m, t):
+        """Lower bound on distillate flow (with slack)"""
+        return m.D2[t] >= 0 - m.D2eps[t]
+    m.D2_lower = pyo.Constraint(m.time, rule=D2lower_rule)
+
+    def B2lower_rule(m, t):
+        """Lower bound on bottoms flow (with slack)"""
+        return m.B2[t] >= 0 - m.B2eps[t]
+    m.B2_lower = pyo.Constraint(m.time, rule=B2lower_rule)
+
+    # ---- Hard Constraints on TC2 (tray temperature) ----
+    def TC2lower_rule(m, k, t):
+        """Lower bound on tray temperature (with slack)"""
+        return m.TC2[k, t] >= 350
+    m.TC2_lower = pyo.Constraint(m.tray, m.time, rule=TC2lower_rule)
+
+    def TC2upper_rule(m, k, t):
+        """Upper bound on tray temperature (with slack)"""
+        return m.TC2[k, t] <= 450
+    m.TC2_upper = pyo.Constraint(m.tray, m.time, rule=TC2upper_rule)
+
+    # ---- VLE Equations for Column 2 ----
+    def const1b_rule(m, k, j, t):
+        """VLE equation numerator"""
+        return m.y2_num[k, j, t] == m.x2[k, j, t] * m.m_alpha[j,j]
+    m.const1b = pyo.Constraint(m.vapor_trays, m.comp, m.time, rule=const1b_rule)
+
+    def const2b_rule(m, k, j, t):
+        """VLE equation denominator"""
+        return m.y2_den[k, j, t] == ((m.x2[k, 1, t] * (m.alpha[1] - 1) + m.x2[k, 2, t]*(m.alpha[2] - 1)) + 1)
+    m.const2b = pyo.Constraint(m.vapor_trays, m.comp, m.time, rule=const2b_rule)
+
+    def const3b_rule(m, k, j, t):
+        """VLE equation"""
+        return m.y2[k, j, t] * m.y2_den[k, j, t] == m.y2_num[k, j, t]
+    m.const3b = pyo.Constraint(m.vapor_trays, m.comp, m.time, rule=const3b_rule)
+
+    # ---- Vapor flows assuming constant molar flow for Column 2 ----
+    # Col-2 feed (B1) is all liquid (qF2=1), so V2=VB2 everywhere.
+    # Consistent with AMPL const25 (k<NF) and const26 (k>=NF) both setting V2=VB2.
+    def const4b_rule(m, k, t):
+        """Vapor flow = boilup for all trays (all-liquid feed to Col 2)"""
+        return m.V2[k, t] == m.VB2[t]
+    m.const4b = pyo.Constraint(m.vapor_trays, m.time, rule=const4b_rule)
+    
+    # ---- Liquid flows using Francis Weir formula for Column 2 ----
+    def const6b_rule(m, k, t):
+        """Liquid flow using Francis Weir formula"""
+        if 2 <= k <= m.NF:
+            # Below feed
+            return m.L2[k, t] == m.Kbf * ( ( m.M2[k,t] - m.Muw + sqrt((m.M2[k, t] - m.Muw)**2 + 10**(-8))) / 2 ) **1.5
         elif m.NF + 1 <= k <= 40:
             # Above feed
-            return m.M2dot[k, t] == m.L2[k + 1, t] - m.L2[k, t] + m.V2[k - 1, t] - m.V2[k, t]
+            return m.L2[k, t] == m.Kuf * ( ( m.M2[k,t] - m.Muw + sqrt((m.M2[k,t] - m.Muw)**2 + 10**(-8))) / 2 ) **1.5
         elif k == 41:
-            # Total condenser
-            return m.M2dot[41, t] == m.V2[40, t] - m.LT2[t] - m.D2[t]
+            # Condenser's liquid flow
+            return m.L2[k, t] == m.LT2[t]
         else:
             return pyo.Constraint.Skip
+    m.const6b = pyo.Constraint(m.liquid_trays, m.time, rule=const6b_rule)
 
-    m.M2_balance = pyo.Constraint(m.tray, m.time, rule=M2_balance_rule)
+    # ---- Material balances for total holdup and component holdup for Column 2 ----
+    def const11b_rule(m, k, t):
+        """Material balances for total holoup"""
+        if k == 1:
+            # Reboiler
+            return m.M2dot[k, t] == m.L2[2,t] - m.V2[1,t] - m.B2[t]
+        elif 2 <= k <= m.NF - 1:
+            # Below feed
+            return m.M2dot[k, t] == m.L2[k + 1, t] - m.L2[k, t] + m.V2[k - 1, t] - m.V2[k, t]
+        elif k == m.NF:
+            # Feed tray
+            return m.M2dot[k, t] == m.L2[k + 1, t] - m.L2[k, t] + m.V2[k - 1, t] - m.V2[k, t] + m.B1[t]
+        elif m.NF + 1 <= k <= m.NT - 1:
+            # Above feed
+            return m.M2dot[k, t] == m.L2[k + 1, t] - m.L2[k, t] + m.V2[k - 1, t] - m.V2[k, t] # Same as below feed
+        elif k == m.NT:
+            # Total condenser
+            return m.M2dot[k, t] == m.V2[k - 1, t] - m.LT2[t] - m.D2[t]
+        else:
+            return pyo.Constraint.Skip
+    m.const11b = pyo.Constraint(m.tray, m.time, rule=const11b_rule)
 
-    # ---- Component Material Balances Column 2 ----
-    m.Mx2dot = {}  # Component holdup derivative (algebraic)
-    for i in m.time:
-        for k in m.tray:
-            for j in m.comp:
-                if k == 1:
-                    # Reboiler
-                    m.Mx2dot[k, j, i] = (
-                        m.L2[2, i] * m.x2[2, j, i] -
-                        m.V2[1, i] * m.y2[1, j, i] -
-                        m.B2[i] * m.x2[1, j, i]
-                    )
-                elif 2 <= k <= m.NF - 1:
-                    # Below feed
-                    m.Mx2dot[k, j, i] = (
-                        m.L2[k + 1, i] * m.x2[k + 1, j, i] - m.L2[k, i] * m.x2[k, j, i] +
-                        m.V2[k - 1, i] * m.y2[k - 1, j, i] - m.V2[k, i] * m.y2[k, j, i]
-                    )
-                elif k == m.NF:
-                    # Feed tray (receives B1 from Column 1)
-                    m.Mx2dot[k, j, i] = (
-                        m.L2[k + 1, i] * m.x2[k + 1, j, i] - m.L2[k, i] * m.x2[k, j, i] +
-                        m.V2[k - 1, i] * m.y2[k - 1, j, i] - m.V2[k, i] * m.y2[k, j, i] +
-                        m.B1[i] * m.x1[1, j, i]  # Feed from Column 1 bottoms
-                    )
-                elif m.NF + 1 <= k <= 40:
-                    # Above feed
-                    m.Mx2dot[k, j, i] = (
-                        m.L2[k + 1, i] * m.x2[k + 1, j, i] - m.L2[k, i] * m.x2[k, j, i] +
-                        m.V2[k - 1, i] * m.y2[k - 1, j, i] - m.V2[k, i] * m.y2[k, j, i]
-                    )
-                elif k == 41:
-                    # Total condenser
-                    m.Mx2dot[k, j, i] = (
-                        m.V2[40, i] * m.y2[40, j, i] -
-                        m.L2[41, i] * m.x2[41, j, i] -
-                        m.D2[i] * m.x2[41, j, i]
-                    )
+    def const13b_rule(m, k, j, t):
+        """Material balances for component holdup"""
+        if k == 1:
+            # Reboiler
+            return m.x2dot[k, j, t] * m.M2[k, t] + m.M2dot[k, t] * m.x2[k, j, t] == m.L2[2, t] * m.x2[2, j, t] - m.V2[1, t] * m.y2[1, j, t] - m.B2[t] * m.x2[1, j, t]
+        elif 2 <= k <= m.NF - 1:
+            # Below feed
+            return m.x2dot[k, j, t] * m.M2[k, t] + m.M2dot[k, t] * m.x2[k, j, t] == m.L2[k + 1, t] * m.x2[k + 1, j, t] - m.L2[k, t] * m.x2[k, j, t] + m.V2[k - 1, t] * m.y2[k - 1, j, t] - m.V2[k, t] * m.y2[k, j, t]
+        elif k == m.NF:
+            # Feed tray
+            return m.x2dot[k, j, t] * m.M2[k, t] + m.M2dot[k, t] * m.x2[k, j, t] == m.L2[k + 1, t] * m.x2[k + 1, j, t] - m.L2[k, t] * m.x2[k, j, t] + m.V2[k - 1, t] * m.y2[k - 1, j, t] - m.V2[k, t] * m.y2[k, j, t] + m.B1[t] * m.x1[1,j,t]
+        elif m.NF + 1 <= k <= m.NT - 1:
+            # Above feed
+            return m.x2dot[k, j, t] * m.M2[k, t] + m.M2dot[k ,t]*m.x2 [k,j,t]==m.L2 [k+1,t]*m.x2 [k+1,j,t]-m.L2 [k,t]*m.x2 [k,j,t]+m.V2 [k-1,t]*m.y2 [k-1,j,t]-m.V2 [k,t]*m.y2 [k,j,t]
+        elif k == m.NT:
+            # Total condenser
+            return m.x2dot[k, j, t] * m.M2[k, t] + m.M2dot[k, t] * m.x2[k, j, t] == m.V2[k - 1, t] * m.y2[k - 1, j, t] - m.L2[k, t] * m.x2[k, j, t] - m.D2[t] * m.x2[k, j, t]
+        else:
+            return pyo.Constraint.Skip
+    m.const13b = pyo.Constraint(m.tray, m.comp, m.time, rule=const13b_rule)
 
-    def x2dot_rule(m, k, j, t):
-        """Derivative of liquid composition"""
-        return m.x2dot[k, j, t] * m.M2[k, t] == m.Mx2dot[k, j, t] - m.x2[k, j, t] * m.M2dot[k, t]
+    def const43_rule(m, k, t):
+        return m.TC1[k, t] == m.x1[k, 1, t] * 353.3 + m.x1[k, 2, t] * 383.8 + (1 - m.x1[k, 1, t] - m.x1[k, 2, t]) * 411.5
+    m.const43 = pyo.Constraint(m.tray, m.time, rule=const43_rule)
 
-    m.x2dot_balance = pyo.Constraint(m.tray, m.comp, m.time, rule=x2dot_rule)
+    def const44_rule(m, k, t):
+        return m.TC2[k, t] == m.x2[k, 1, t] * 353.3 + m.x2[k, 2, t] * 383.8 + (1 - m.x2[k, 1, t] - m.x2[k, 2, t]) * 411.5 
+    m.const44 = pyo.Constraint(m.tray, m.time, rule=const44_rule)
 
-    # ---- Constraint to define xC (C purity in Column 2 bottoms) ----
-    def xC_definition_rule(m, t):
-        """Define xC as the purity of component C in the bottoms of Column 2"""
-        return m.xC[t] == 1 - m.x2[1, 1, t] - m.x2[1, 2, t]
-
-    m.xC_definition = pyo.Constraint(m.time, rule=xC_definition_rule)
+    def c_bottom_rule(m, t):
+        return m.xC[t] == 1 - (m.x2[1, 1, t] + m.x2[1, 2, t])
+    m.c_bottom = pyo.Constraint(m.time, rule=c_bottom_rule)
 
     return m
 
@@ -410,19 +484,35 @@ def custom_objective(m, options):
     """
     # Price parameters
     pF = 1.0   # Feed price
-    pV = 1.0   # Energy price (assumed, can be adjusted)
+    m.pV = pyo.Param(initialize=1.0)   # Energy price (assumed, can be adjusted)
     pA = 1.0   # Light component A price
     pB = 2.0   # Medium component B price (higher value)
     pC = 1.0   # Heavy component C price
+    rho = 1.0e4  # Penalty weight for slack variables (consistent with AMPL rho=1e4)
 
     def stage_cost(m, t):
-        return (
-            pF * m.F +
-            pV * (m.VB1[t] + m.VB2[t]) -
+        economic_cost = (
+            pF * m.F[t] +
+            m.pV * (m.VB1[t] + m.VB2[t]) -
             pA * m.D1[t] -
             pB * m.D2[t] -
             pC * m.B2[t]
         )
+        penalty = rho * (
+            sum(m.x1eps[k, j, t] for k in m.tray for j in m.comp) +
+            sum(m.M1eps[k, t] for k in m.tray) +
+            sum(m.V1eps[k, t] for k in m.vapor_trays) +
+            sum(m.L1eps[k, t] for k in m.liquid_trays) +
+            m.D1eps[t] + m.B1eps[t] +
+            sum(m.TC1eps[k, t] for k in m.tray) +
+            sum(m.x2eps[k, j, t] for k in m.tray for j in m.comp) +
+            sum(m.M2eps[k, t] for k in m.tray) +
+            sum(m.V2eps[k, t] for k in m.vapor_trays) +
+            sum(m.L2eps[k, t] for k in m.liquid_trays) +
+            m.D2eps[t] + m.B2eps[t] +
+            sum(m.TC2eps[k, t] for k in m.tray)
+        )
+        return economic_cost + 0 * penalty
 
     return stage_cost
 
@@ -448,10 +538,86 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
 
-    model_display_flag = False
+    model_display_flag = True
     if model_display_flag:
         with open("ternary_model_output.txt", "w") as f:
             m.pprint(ostream=f)
 
     assert isinstance(m, pyo.ConcreteModel)
     print('Model Test Completed Successfully')
+
+    def test_steady_state():
+        from make_model import _make_steady_state_model
+        from make_model import _solve_steady_state_model
+        options = _import_settings()
+        m_ss = pyo.ConcreteModel()
+        m_ss = _make_steady_state_model(m_ss, options)
+
+        # ---- Square-system solve switch ----
+        # True:  Fix MVs + all slacks to 0, deactivate inequality soft constraints.
+        #        IPOPT sees only equality constraints → truly square system.
+        #        Converges → model equations are primal feasible.
+        #        Fails     → primal infeasibility in the equality equations.
+        # False: Full optimization with MVs free and slacks active (normal operation).
+        square_system_solve = True
+
+        # Names of all slack variable groups and their corresponding soft constraints
+        _slack_vars = [
+            'x1eps', 'M1eps', 'V1eps', 'L1eps', 'D1eps', 'B1eps', 'TC1eps',
+            'x2eps', 'M2eps', 'V2eps', 'L2eps', 'D2eps', 'B2eps', 'TC2eps',
+        ]
+        _ineq_constraints = [
+            'x1_lower', 'M1_lower', 'M1_upper', 'V1_lower', 'L1_lower', 'D1_lower', 'B1_lower',
+            'TC1_lower', 'TC1_upper',
+            'x2_lower', 'M2_lower', 'M2_upper', 'V2_lower', 'L2_lower', 'D2_lower', 'B2_lower',
+            'TC2_lower', 'TC2_upper',
+        ]
+
+        if square_system_solve:
+            # 1. Fix all MVs to their initialized values
+            fixed_mvs = []
+            fixed_slacks = []
+            for mv_name in m_ss.MV_index:
+                try:
+                    mv_var = getattr(m_ss, mv_name)
+                except AttributeError:
+                    print(f"  WARNING: MV '{mv_name}' not found, skipping")
+                    continue
+                for idx in mv_var:
+                    mv_var[idx].fix(pyo.value(mv_var[idx]))
+                    fixed_mvs.append(mv_var[idx])
+
+            # 2. Fix all slack variables to 0 (eliminate DOF from penalty terms)
+            for sname in _slack_vars:
+                sv = getattr(m_ss, sname, None)
+                if sv is None:
+                    continue
+                for idx in sv:
+                    sv[idx].fix(0.0)
+                    fixed_slacks.append(sv[idx])
+
+            # 3. Deactivate inequality soft constraints (now trivially satisfied)
+            deactivated = []
+            for cname in _ineq_constraints:
+                con = getattr(m_ss, cname, None)
+                if con is not None:
+                    con.deactivate()
+                    deactivated.append(cname)
+
+            print(f"\n=== Square-system solve: fixed {len(fixed_mvs+fixed_slacks)} vars, "
+                  f"deactivated {len(deactivated)} inequality constraints ===")
+
+            steady_state_data = _solve_steady_state_model(m_ss, None, options)
+
+            # Restore everything
+            for v in fixed_mvs:
+                v.unfix()
+            # for cname in deactivated:
+            #     getattr(m_ss, cname).activate()
+
+            steady_state_data = _solve_steady_state_model(m_ss, None, options)
+
+        else:
+            m_ss = _solve_steady_state_model(m_ss, None, options)
+
+    test_steady_state()
