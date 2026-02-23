@@ -486,7 +486,7 @@ def custom_objective(m, options):
     pF = 1.0   # Feed price
     m.pV = pyo.Param(initialize=1.0)   # Energy price (assumed, can be adjusted)
     pA = 1.0   # Light component A price
-    pB = 2.0   # Medium component B price (higher value)
+    pB = 50.0   # Medium component B price (higher value)
     pC = 1.0   # Heavy component C price
     rho = 1.0e4  # Penalty weight for slack variables (consistent with AMPL rho=1e4)
 
@@ -512,7 +512,7 @@ def custom_objective(m, options):
             m.D2eps[t] + m.B2eps[t] +
             sum(m.TC2eps[k, t] for k in m.tray)
         )
-        return economic_cost + 0 * penalty
+        return economic_cost + penalty
 
     return stage_cost
 
@@ -609,13 +609,40 @@ if __name__ == '__main__':
 
             steady_state_data = _solve_steady_state_model(m_ss, None, options)
 
+            if True:
+                with open("base_solution.txt", "w") as f:
+                    m_ss.pprint(ostream=f)
+
             # Restore everything
             for v in fixed_mvs:
-                v.unfix()
+                # 2: if v.parent_component() is m_ss.VB2 or v.parent_component() is m_ss.LT2:
+                # 3: if v.parent_component() is m_ss.VB2 or v.parent_component() is m_ss.LT2 or v.parent_component() is m_ss.VB1:
+                # 4: if v.parent_component() is m_ss.VB1:
+                # 5: if v.parent_component() is m_ss.VB1 or v.parent_component() is m_ss.LT1:
+                # 6: if v.parent_component() is m_ss.LT1:
+                # 7: if v.parent_component() is m_ss.VB2 or v.parent_component() is m_ss.LT2 or v.parent_component() is m_ss.LT1:
+                if True:
+                    v.unfix()
+                else:
+                    continue
+            for v in fixed_slacks:
+                if v.parent_component() is m_ss.M1eps or v.parent_component() is m_ss.M2eps:
+                    v.unfix()
+                else:
+                    continue
+            for cname in deactivated:
+                if cname in ['M1_upper', 'M2_upper', 'M1_lower', 'M2_lower']:
+                    getattr(m_ss, cname).activate()
+                else:
+                    continue
             # for cname in deactivated:
             #     getattr(m_ss, cname).activate()
 
             steady_state_data = _solve_steady_state_model(m_ss, None, options)
+
+            if True:
+                with open("optimized_solution.txt", "w") as f:
+                    m_ss.pprint(ostream=f)
 
         else:
             m_ss = _solve_steady_state_model(m_ss, None, options)
