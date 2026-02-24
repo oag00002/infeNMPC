@@ -45,9 +45,11 @@ def variables_initialize(m):
     m.Muw = pyo.Param(initialize=0.25)      # Liquid holdup under weir (kmol)
 
     # ---- Feed Parameters (Disturbances) ----
-    m.F = pyo.Param(m.time, initialize=1.4, mutable=True)     # Feed flow rate
-    m.qF = pyo.Param(m.time, initialize=1.0, mutable=True)    # Feed liquid fraction
-    m.zF = pyo.Param(m.comp, m.time, initialize=lambda m, i, t: 0.4 if i == 1 else 0.2, mutable=True)  # Feed composition (A, B)
+    # NOTE: F, qF, zF are mutable and time-indexed. They are defined in
+    # equations_write() (called after discretization) so that all discretized
+    # time points exist when the Params are constructed and receive their
+    # initialize= values. Defining them here would leave post-discretization
+    # time points uninitialized (Pyomo does not backfill mutable Params).
 
     # ---- Consistent steady-state initialization ----
     # clip ≈ M - Muw  (for M > Muw, since sqrt((M-Muw)^2+eps) ≈ M-Muw)
@@ -125,6 +127,7 @@ def variables_initialize(m):
     m.D2eps = pyo.Var(m.time, domain=pyo.NonNegativeReals)
     m.B2eps = pyo.Var(m.time, domain=pyo.NonNegativeReals)
     m.TC2eps = pyo.Var(m.tray, m.time, domain=pyo.NonNegativeReals)
+    m.xCeps = pyo.Var(m.time, domain=pyo.NonNegativeReals)
 
     # VLE equation split for Column 2
     m.y2_num = pyo.Var(m.vapor_trays, m.comp, m.time, initialize = 0.3)
@@ -168,6 +171,9 @@ def variables_initialize(m):
     return m
 
 
+# Make max iters one less than restoration and see most violated constraint.
+
+
 def equations_write(m):
     """
     Define differential equations and constraints for the two-column system.
@@ -178,6 +184,13 @@ def equations_write(m):
     - Vapor flow relations (constant molar overflow)
     - Liquid flow relations (Francis weir formula)
     """
+
+    # ---- Feed Parameters (Disturbances) ----
+    # Defined here (after discretization) so all time points in m.time already
+    # exist when the Params are constructed, ensuring initialize= covers them all.
+    m.F = pyo.Param(m.time, initialize=1.4, mutable=True)     # Feed flow rate
+    m.qF = pyo.Param(m.time, initialize=1.0, mutable=True)    # Feed liquid fraction
+    m.zF = pyo.Param(m.comp, m.time, initialize=lambda m, i, t: 0.4 if i == 1 else 0.2, mutable=True)  # Feed composition (A, B)
 
     # ========================================================================
     # COLUMN 1 EQUATIONS
@@ -470,6 +483,18 @@ def equations_write(m):
         return m.xC[t] == 1 - (m.x2[1, 1, t] + m.x2[1, 2, t])
     m.c_bottom = pyo.Constraint(m.time, rule=c_bottom_rule)
 
+    def const45_rule(m, t):
+        return m.x1[41,1,t] >= 0.95 - m.x1eps[41,1,t]
+    m.const45 = pyo.Constraint(m.time, rule=const45_rule)
+    
+    def const46_rule(m, t):
+        return m.x2[41,2,t] >= 0.95 - m.x1eps[41,2,t]
+    m.const46 = pyo.Constraint(m.time, rule=const46_rule)
+
+    def const47_rule(m, t):
+        return m.xC[t] >= 0.95 - m.xCeps[t]
+    m.const47 = pyo.Constraint(m.time, rule=const47_rule)
+
     return m
 
 
@@ -486,7 +511,7 @@ def custom_objective(m, options):
     pF = 1.0   # Feed price
     m.pV = pyo.Param(initialize=1.0)   # Energy price (assumed, can be adjusted)
     pA = 1.0   # Light component A price
-    pB = 50.0   # Medium component B price (higher value)
+    pB = 2.0   # Medium component B price (higher value)
     pC = 1.0   # Heavy component C price
     rho = 1.0e4  # Penalty weight for slack variables (consistent with AMPL rho=1e4)
 
@@ -510,7 +535,8 @@ def custom_objective(m, options):
             sum(m.V2eps[k, t] for k in m.vapor_trays) +
             sum(m.L2eps[k, t] for k in m.liquid_trays) +
             m.D2eps[t] + m.B2eps[t] +
-            sum(m.TC2eps[k, t] for k in m.tray)
+            sum(m.TC2eps[k, t] for k in m.tray) +
+            m.xCeps[t]
         )
         return economic_cost + penalty
 
@@ -559,18 +585,19 @@ if __name__ == '__main__':
         #        Converges → model equations are primal feasible.
         #        Fails     → primal infeasibility in the equality equations.
         # False: Full optimization with MVs free and slacks active (normal operation).
-        square_system_solve = True
+        square_system_solve = False
 
         # Names of all slack variable groups and their corresponding soft constraints
         _slack_vars = [
             'x1eps', 'M1eps', 'V1eps', 'L1eps', 'D1eps', 'B1eps', 'TC1eps',
             'x2eps', 'M2eps', 'V2eps', 'L2eps', 'D2eps', 'B2eps', 'TC2eps',
+            'xCeps',
         ]
         _ineq_constraints = [
             'x1_lower', 'M1_lower', 'M1_upper', 'V1_lower', 'L1_lower', 'D1_lower', 'B1_lower',
             'TC1_lower', 'TC1_upper',
             'x2_lower', 'M2_lower', 'M2_upper', 'V2_lower', 'L2_lower', 'D2_lower', 'B2_lower',
-            'TC2_lower', 'TC2_upper',
+            'TC2_lower', 'TC2_upper', 'const45', 'const46', 'const47'
         ]
 
         if square_system_solve:
@@ -613,6 +640,8 @@ if __name__ == '__main__':
                 with open("base_solution.txt", "w") as f:
                     m_ss.pprint(ostream=f)
 
+            test_flag = True
+
             # Restore everything
             for v in fixed_mvs:
                 # 2: if v.parent_component() is m_ss.VB2 or v.parent_component() is m_ss.LT2:
@@ -621,20 +650,39 @@ if __name__ == '__main__':
                 # 5: if v.parent_component() is m_ss.VB1 or v.parent_component() is m_ss.LT1:
                 # 6: if v.parent_component() is m_ss.LT1:
                 # 7: if v.parent_component() is m_ss.VB2 or v.parent_component() is m_ss.LT2 or v.parent_component() is m_ss.LT1:
-                if True:
+                if True or test_flag:
                     v.unfix()
                 else:
                     continue
             for v in fixed_slacks:
-                if v.parent_component() is m_ss.M1eps or v.parent_component() is m_ss.M2eps:
+
+                if test_flag:
                     v.unfix()
+
                 else:
-                    continue
+
+                    comp = v.parent_component()
+                    idx = v.index()
+
+                    if (
+                        comp is m_ss.M1eps
+                        or comp is m_ss.M2eps
+                        or comp is m_ss.xCeps
+                        or (comp is m_ss.x1eps and idx[0] == 41 and idx[1] == 1)
+                        or (comp is m_ss.x2eps and idx[0] == 41 and idx[1] == 2)
+                    ):
+                        v.unfix()
+                    else:
+                        continue
+
             for cname in deactivated:
-                if cname in ['M1_upper', 'M2_upper', 'M1_lower', 'M2_lower']:
+                if test_flag:
                     getattr(m_ss, cname).activate()
                 else:
-                    continue
+                    if cname in ['M1_upper', 'M2_upper', 'M1_lower', 'M2_lower', 'const45', 'const46', 'const47']:
+                        getattr(m_ss, cname).activate()
+                    else:
+                        continue
             # for cname in deactivated:
             #     getattr(m_ss, cname).activate()
 

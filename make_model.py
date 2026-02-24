@@ -673,25 +673,24 @@ if __name__ == '__main__':
     options = _import_settings()
     m = pyo.ConcreteModel()
 
-    m_ss = pyo.ConcreteModel()
-    print('\nTesting Steady State Model Setup and Solution')
-    m_ss = _make_steady_state_model(m_ss, options)
-    if True:  # Toggle to False to disable model display
-        with open("model_output.txt", "w") as f:
-            m_ss.pprint(ostream=f)
-    m_ss = _solve_steady_state_model(m_ss, None, options)
+    # m_ss = pyo.ConcreteModel()
+    # print('\nTesting Steady State Model Setup and Solution')
+    # m_ss = _make_steady_state_model(m_ss, options)
+    # if True:  # Toggle to False to disable model display
+    #     with open("model_output.txt", "w") as f:
+    #         m_ss.pprint(ostream=f)
+    # m_ss = _solve_steady_state_model(m_ss, None, options)
 
     # Test full model creation with discretization
-    # print('\nTesting Infinite Horizon Model Setup')
-    # m = _make_finite_horizon_model(m, options)
-    # try:
-    # _make_finite_horizon_model(m, options)
-    # print('Model Setup and Discretization Successful')
-    # except Exception as e:
-    #     print(f'Model Setup Failed: {e}')
+    print('\nTesting Infinite Horizon Model Setup')
+    try:
+        _make_finite_horizon_model(m, options)
+        print('Model Setup and Discretization Successful')
+    except Exception as e:
+        print(f'Model Setup Failed: {e}')
 
     if True:  # Toggle to False to disable model display
         with open("model_output.txt", "w") as f:
-            m_ss.pprint(ostream=f)
+            m.pprint(ostream=f)
 
     assert isinstance(m, pyo.ConcreteModel)

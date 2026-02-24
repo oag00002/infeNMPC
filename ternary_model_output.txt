@@ -27,13 +27,13 @@
 13 Param Declarations
     F : Size=7, Index=time, Domain=Any, Default=None, Mutable=True
         Key      : Value
-               0 : 1.4
-        0.775255 : <class 'pyomo.core.base.param.Param.NoValue'>
-        3.224745 : <class 'pyomo.core.base.param.Param.NoValue'>
-             5.0 : <class 'pyomo.core.base.param.Param.NoValue'>
-        5.775255 : <class 'pyomo.core.base.param.Param.NoValue'>
-        8.224745 : <class 'pyomo.core.base.param.Param.NoValue'>
-              10 : 1.4
+               0 :   1.4
+        0.775255 :   1.4
+        3.224745 :   1.4
+             5.0 :   1.4
+        5.775255 :   1.4
+        8.224745 :   1.4
+              10 :   1.4
     Kbf : Size=1, Index=None, Domain=Any, Default=None, Mutable=False
         Key  : Value
         None : 29.65032
@@ -69,13 +69,13 @@
         (2, 2) :   1.5
     qF : Size=7, Index=time, Domain=Any, Default=None, Mutable=True
         Key      : Value
-               0 : 1.0
-        0.775255 : <class 'pyomo.core.base.param.Param.NoValue'>
-        3.224745 : <class 'pyomo.core.base.param.Param.NoValue'>
-             5.0 : <class 'pyomo.core.base.param.Param.NoValue'>
-        5.775255 : <class 'pyomo.core.base.param.Param.NoValue'>
-        8.224745 : <class 'pyomo.core.base.param.Param.NoValue'>
-              10 : 1.0
+               0 :   1.0
+        0.775255 :   1.0
+        3.224745 :   1.0
+             5.0 :   1.0
+        5.775255 :   1.0
+        8.224745 :   1.0
+              10 :   1.0
     setpoints : Size=3, Index=CV_index, Domain=Any, Default=None, Mutable=False
         Key      : Value
         x1[41,1] :  0.95
@@ -83,22 +83,22 @@
               xC :  0.95
     zF : Size=14, Index=comp*time, Domain=Any, Default=None, Mutable=True
         Key           : Value
-               (1, 0) : 0.4
-        (1, 0.775255) : <class 'pyomo.core.base.param.Param.NoValue'>
-        (1, 3.224745) : <class 'pyomo.core.base.param.Param.NoValue'>
-             (1, 5.0) : <class 'pyomo.core.base.param.Param.NoValue'>
-        (1, 5.775255) : <class 'pyomo.core.base.param.Param.NoValue'>
-        (1, 8.224745) : <class 'pyomo.core.base.param.Param.NoValue'>
-              (1, 10) : 0.4
-               (2, 0) : 0.2
-        (2, 0.775255) : <class 'pyomo.core.base.param.Param.NoValue'>
-        (2, 3.224745) : <class 'pyomo.core.base.param.Param.NoValue'>
-             (2, 5.0) : <class 'pyomo.core.base.param.Param.NoValue'>
-        (2, 5.775255) : <class 'pyomo.core.base.param.Param.NoValue'>
-        (2, 8.224745) : <class 'pyomo.core.base.param.Param.NoValue'>
-              (2, 10) : 0.2
+               (1, 0) :   0.4
+        (1, 0.775255) :   0.4
+        (1, 3.224745) :   0.4
+             (1, 5.0) :   0.4
+        (1, 5.775255) :   0.4
+        (1, 8.224745) :   0.4
+              (1, 10) :   0.4
+               (2, 0) :   0.2
+        (2, 0.775255) :   0.2
+        (2, 3.224745) :   0.2
+             (2, 5.0) :   0.2
+        (2, 5.775255) :   0.2
+        (2, 8.224745) :   0.2
+              (2, 10) :   0.2
 
-43 Var Declarations
+44 Var Declarations
     B1 : Size=7, Index=time
         Key      : Lower : Value : Upper : Fixed : Stale : Domain
                0 :  None :  0.83 :  None : False : False :  Reals
@@ -8818,6 +8818,15 @@
         5.775255 :  None :   0.2 :  None : False : False :  Reals
         8.224745 :  None :   0.2 :  None : False : False :  Reals
               10 :  None :   0.2 :  None : False : False :  Reals
+    xCeps : Size=7, Index=time
+        Key      : Lower : Value : Upper : Fixed : Stale : Domain
+               0 :     0 :  None :  None : False :  True : NonNegativeReals
+        0.775255 :     0 :  None :  None : False :  True : NonNegativeReals
+        3.224745 :     0 :  None :  None : False :  True : NonNegativeReals
+             5.0 :     0 :  None :  None : False :  True : NonNegativeReals
+        5.775255 :     0 :  None :  None : False :  True : NonNegativeReals
+        8.224745 :     0 :  None :  None : False :  True : NonNegativeReals
+              10 :     0 :  None :  None : False :  True : NonNegativeReals
     y1 : Size=560, Index=vapor_trays*comp*time
         Key               : Lower : Value : Upper : Fixed : Stale : Domain
                 (1, 1, 0) :  None :   0.3 :  None : False : False :  Reals
@@ -12191,7 +12200,7 @@
         (40, 2, 8.224745) :  None :   0.3 :  None : False : False :  Reals
               (40, 2, 10) :  None :   0.3 :  None : False : False :  Reals
 
-39 Constraint Declarations
+42 Constraint Declarations
     B1_lower : Size=7, Index=time, Active=True
         Key      : Lower : Body                             : Upper : Active
                0 :  -Inf :               - B1eps[0] - B1[0] :   0.0 :   True
@@ -22135,6 +22144,33 @@
         (41, 5.775255) :   0.0 : TC2[41,5.775255] - (353.3*x2[41,1,5.775255] + 383.8*x2[41,2,5.775255] + (1 - x2[41,1,5.775255] - x2[41,2,5.775255])*411.5) :   0.0 :   True
         (41, 8.224745) :   0.0 : TC2[41,8.224745] - (353.3*x2[41,1,8.224745] + 383.8*x2[41,2,8.224745] + (1 - x2[41,1,8.224745] - x2[41,2,8.224745])*411.5) :   0.0 :   True
               (41, 10) :   0.0 :                               TC2[41,10] - (353.3*x2[41,1,10] + 383.8*x2[41,2,10] + (1 - x2[41,1,10] - x2[41,2,10])*411.5) :   0.0 :   True
+    const45 : Size=7, Index=time, Active=True
+        Key      : Lower : Body                                            : Upper : Active
+               0 :  -Inf :               0.95 - x1eps[41,1,0] - x1[41,1,0] :   0.0 :   True
+        0.775255 :  -Inf : 0.95 - x1eps[41,1,0.775255] - x1[41,1,0.775255] :   0.0 :   True
+        3.224745 :  -Inf : 0.95 - x1eps[41,1,3.224745] - x1[41,1,3.224745] :   0.0 :   True
+             5.0 :  -Inf :           0.95 - x1eps[41,1,5.0] - x1[41,1,5.0] :   0.0 :   True
+        5.775255 :  -Inf : 0.95 - x1eps[41,1,5.775255] - x1[41,1,5.775255] :   0.0 :   True
+        8.224745 :  -Inf : 0.95 - x1eps[41,1,8.224745] - x1[41,1,8.224745] :   0.0 :   True
+              10 :  -Inf :             0.95 - x1eps[41,1,10] - x1[41,1,10] :   0.0 :   True
+    const46 : Size=7, Index=time, Active=True
+        Key      : Lower : Body                                            : Upper : Active
+               0 :  -Inf :               0.95 - x1eps[41,2,0] - x2[41,2,0] :   0.0 :   True
+        0.775255 :  -Inf : 0.95 - x1eps[41,2,0.775255] - x2[41,2,0.775255] :   0.0 :   True
+        3.224745 :  -Inf : 0.95 - x1eps[41,2,3.224745] - x2[41,2,3.224745] :   0.0 :   True
+             5.0 :  -Inf :           0.95 - x1eps[41,2,5.0] - x2[41,2,5.0] :   0.0 :   True
+        5.775255 :  -Inf : 0.95 - x1eps[41,2,5.775255] - x2[41,2,5.775255] :   0.0 :   True
+        8.224745 :  -Inf : 0.95 - x1eps[41,2,8.224745] - x2[41,2,8.224745] :   0.0 :   True
+              10 :  -Inf :             0.95 - x1eps[41,2,10] - x2[41,2,10] :   0.0 :   True
+    const47 : Size=7, Index=time, Active=True
+        Key      : Lower : Body                                  : Upper : Active
+               0 :  -Inf :               0.95 - xCeps[0] - xC[0] :   0.0 :   True
+        0.775255 :  -Inf : 0.95 - xCeps[0.775255] - xC[0.775255] :   0.0 :   True
+        3.224745 :  -Inf : 0.95 - xCeps[3.224745] - xC[3.224745] :   0.0 :   True
+             5.0 :  -Inf :           0.95 - xCeps[5.0] - xC[5.0] :   0.0 :   True
+        5.775255 :  -Inf : 0.95 - xCeps[5.775255] - xC[5.775255] :   0.0 :   True
+        8.224745 :  -Inf : 0.95 - xCeps[8.224745] - xC[8.224745] :   0.0 :   True
+              10 :  -Inf :             0.95 - xCeps[10] - xC[10] :   0.0 :   True
     const4b : Size=280, Index=vapor_trays*time, Active=True
         Key            : Lower : Body                            : Upper : Active
                 (1, 0) :   0.0 :                V2[1,0] - VB2[0] :   0.0 :   True
@@ -25127,4 +25163,4 @@
         Key  : Dimen : Domain  : Size : Members
         None :     1 : [0..10] :    7 : {0, 0.775255, 3.224745, 5.0, 5.775255, 8.224745, 10}
 
-104 Declarations: time MV_index CV_index DV_index NT NC NF tray vapor_trays liquid_trays comp_all comp alpha m_alpha Kuf Kbf Muw F qF zF y1 x1 M1 V1 L1 D1 B1 x1eps M1eps V1eps L1eps D1eps B1eps TC1eps y1_num y1_den TC1 y2 x2 M2 V2 L2 D2 B2 x2eps M2eps V2eps L2eps D2eps B2eps TC2eps y2_num y2_den TC2 x1dot M1dot x2dot M2dot VB1 LT1 VB2 LT2 xC setpoints initial_values x1dot_disc_eq M1dot_disc_eq x2dot_disc_eq M2dot_disc_eq x1_lower M1_lower M1_upper V1_lower L1_lower D1_lower B1_lower TC1_lower TC1_upper const1 const2 const3 const4 const6 const11 const13 x2_lower M2_lower M2_upper V2_lower L2_lower D2_lower B2_lower TC2_lower TC2_upper const1b const2b const3b const4b const6b const11b const13b const43 const44 c_bottom
+108 Declarations: time MV_index CV_index DV_index NT NC NF tray vapor_trays liquid_trays comp_all comp alpha m_alpha Kuf Kbf Muw y1 x1 M1 V1 L1 D1 B1 x1eps M1eps V1eps L1eps D1eps B1eps TC1eps y1_num y1_den TC1 y2 x2 M2 V2 L2 D2 B2 x2eps M2eps V2eps L2eps D2eps B2eps TC2eps xCeps y2_num y2_den TC2 x1dot M1dot x2dot M2dot VB1 LT1 VB2 LT2 xC setpoints initial_values x1dot_disc_eq M1dot_disc_eq x2dot_disc_eq M2dot_disc_eq F qF zF x1_lower M1_lower M1_upper V1_lower L1_lower D1_lower B1_lower TC1_lower TC1_upper const1 const2 const3 const4 const6 const11 const13 x2_lower M2_lower M2_upper V2_lower L2_lower D2_lower B2_lower TC2_lower TC2_upper const1b const2b const3b const4b const6b const11b const13b const43 const44 c_bottom const45 const46 const47

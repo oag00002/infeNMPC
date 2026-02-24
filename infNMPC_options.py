@@ -14,7 +14,7 @@ class Options:
     def __init__(self):
         # Simulation control
         self.num_horizons = 25               # Number of MPC steps
-        self.nfe_finite = 25                  # Finite elements in finite horizon
+        self.nfe_finite = 3                  # Finite elements in finite horizon
         self.ncp_finite = 3                  # Collocation points per FE (finite)
         self.sampling_time = 1               # Time between MPC updates (hours)
 
@@ -24,12 +24,12 @@ class Options:
         self.ncp_infinite = 3                # Collocation points per FE (infinite)
 
         # Solver and model options
-        self.tee_flag = True                # Print solver output
+        self.tee_flag = True           # Print solver output
         self.endpoint_constraints = False     # Enforce endpoint constraints
         self.custom_objective = True         # Use economic objective
         self.initialize_with_initial_data = False
         self.terminal_cost_riemann = False
-        self.remove_collocation = False
+        self.remove_collocation = True
         self.initialization_assist = False
 
         self.input_suppression = False
