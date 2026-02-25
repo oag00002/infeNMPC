@@ -12,7 +12,7 @@ from indexing_tools import _get_variable_key_for_data
 import time
 from math import isclose
 from initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
-from controller_factory import _make_infinite_horizon_controller, _make_finite_horizon_controller
+from controller_factory import _make_infinite_horizon_controller, _make_finite_horizon_controller, _make_plant
 
 # Solver Settings
 use_idaes_solver_configuration_defaults()
@@ -20,46 +20,16 @@ idaes.cfg.ipopt.options.linear_solver = "ma57" # "ma27"
 idaes.cfg.ipopt.options.OF_ma57_automatic_scaling = "yes"
 idaes.cfg.ipopt.options.max_iter = 6000
 idaes.cfg.ipopt.options.halt_on_ampl_error = "yes"
-idaes.cfg.ipopt.options.bound_relax_factor = 0
-
-
-def _make_plant(options):
-    """
-    Build and solve the dynamic simulation model (plant).
-
-    This function initializes the plant model using finite-horizon settings,
-    fixes manipulated variables (MVs), and solves the model to obtain an initial
-    steady-state or consistent profile.
-
-    Args:
-        options (Namespace): Simulation and solver configuration parameters.
-
-    Returns:
-        pyo.ConcreteModel: The initialized and solved plant model.
-    """
-    m = pyo.ConcreteModel()
-    plant_options = _import_settings()
-    plant_options.nfe_finite = 1
-    plant_options.infinite_horizon = False
-
-    m = _make_finite_horizon_model(m, plant_options)
-
-    print('Generating Plant')
-    
-    for var_name in m.MV_index:
-        var = getattr(m, var_name)
-        var.fix()
-        if options.ncp_finite > 1:
-            getattr(m, f"{var_name}_interpolation_constraints").deactivate()
-    
-    m.obj = pyo.Objective(expr=1)
-
-    print('Plant Initial Solve')
-
-    solver = pyo.SolverFactory('ipopt')
-    solver.solve(m, tee=options.tee_flag)
-
-    return m
+idaes.cfg.ipopt.options.bound_relax_factor = 1e-8
+idaes.cfg.ipopt.options.tol = 1e-4
+idaes.cfg.ipopt.options.acceptable_tol = 1e-4
+# idaes.cfg.ipopt.options.expect_infeasible_problem = "no"
+# idaes.cfg.ipopt.options.bound_push = 1e-6
+# idaes.cfg.ipopt.options.bound_frac = 1e-6
+# idaes.cfg.ipopt.options.mu_strategy = "monotone"
+# idaes.cfg.ipopt.options.warm_start_init_point = "yes"
+# idaes.cfg.ipopt.options.warm_start_bound_push = 1e-6
+# idaes.cfg.ipopt.options.warm_start_mult_bound_push = 1e-6
 
 
 def _mpc_loop(options):
@@ -97,6 +67,10 @@ def _mpc_loop(options):
             state_vars = controller.state_vars
 
     plant = _make_plant(options)
+
+    idaes.cfg.ipopt.options.warm_start_init_point = "yes"
+    idaes.cfg.ipopt.options.warm_start_bound_push = 1e-6
+    idaes.cfg.ipopt.options.warm_start_mult_bound_push = 1e-6
 
     # Get full initial TimeSeriesData
     sim_data = plant.interface.get_data_at_time([plant.time.first()])

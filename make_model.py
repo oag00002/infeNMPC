@@ -164,14 +164,23 @@ def _make_infinite_horizon_model(m, options):
     m_iv = pyo.ConcreteModel()
     m_iv = _make_steady_state_model(m_iv, options)
 
+    # Warm-start m_iv from the setpoint SS solution so the IV solve begins at a
+    # physically consistent point rather than the generic initialized values.
+    m_iv_interface = DynamicModelInterface(m_iv, m_iv.time)
+    for t in m_iv.time:
+        m_iv_interface.load_data(steady_state_data, time_points=t)
+
     initial_value_vars = list(m_iv.initial_values.index_set())
     if all(var in m_iv.CV_index for var in initial_value_vars):
-        # If CVs are passed as initial values, use CV initial values only
+        # CVs specified as initial values — solve steady-state model tracking those
+        # CV targets so that all state variables get consistent initial values.
         initial_data_dict = {
             _get_variable_key_for_data(m_iv, cv): pyo.value(m_iv.initial_values[cv])
             for cv in initial_value_vars
         }
-        initial_data = ScalarData(initial_data_dict)
+        m_iv_target = ScalarData(initial_data_dict)
+        print('Initial values provided for CVs. Solving for consistent initial state.')
+        initial_data = _solve_steady_state_model(m_iv, m_iv_target, options)
 
     else:
         # Otherwise assume MVs, and solve for initial state
@@ -382,14 +391,23 @@ def _make_finite_horizon_model(m, options):
     m_iv = pyo.ConcreteModel()
     m_iv = _make_steady_state_model(m_iv, options)
 
+    # Warm-start m_iv from the setpoint SS solution so the IV solve begins at a
+    # physically consistent point rather than the generic initialized values.
+    m_iv_interface = DynamicModelInterface(m_iv, m_iv.time)
+    for t in m_iv.time:
+        m_iv_interface.load_data(steady_state_data, time_points=t)
+
     initial_value_vars = list(m_iv.initial_values.index_set())
     if all(var in m_iv.CV_index for var in initial_value_vars):
-        # If CVs are passed as initial values, use CV initial values only
+        # CVs specified as initial values — solve steady-state model tracking those
+        # CV targets so that all state variables get consistent initial values.
         initial_data_dict = {
             _get_variable_key_for_data(m_iv, cv): pyo.value(m_iv.initial_values[cv])
             for cv in initial_value_vars
         }
-        initial_data = ScalarData(initial_data_dict)
+        m_iv_target = ScalarData(initial_data_dict)
+        print('Initial values provided for CVs. Solving for consistent initial state.')
+        initial_data = _solve_steady_state_model(m_iv, m_iv_target, options)
 
     else:
         # Otherwise assume MVs, and solve for initial state
@@ -398,6 +416,7 @@ def _make_finite_horizon_model(m, options):
             for var in initial_value_vars
         }
         m_iv_target = ScalarData(iv_targets)
+        print('Initial values provided for MVs. Solving for consistent initial state.')
         initial_data = _solve_steady_state_model(m_iv, m_iv_target, options)
 
     print('Writing Finite Horizon Model')
@@ -568,35 +587,15 @@ def _infinite_block_gen(m, options):
                 return pyo.Constraint.Skip
             else:
                 return (options.gamma / options.sampling_time * (1 - t**2)) * m.dphidt[t] == stage_cost
-            
-        def _custom_terminal_cost_rule(m, t):
-            setpoint_stage_cost = sum(
-                c[i] * (_add_time_indexed_expression(m, var_name, t) - m.steady_state_values[var_name])**2
-                for i, var_name in enumerate(m.stage_cost_index)
-            )
-            cost_fn = custom_objective(m, options)  # this returns a lambda
-            if t == 1:
-                if options.endpoint_constraints:
-                    return setpoint_stage_cost <= 1e-6
-                else:
-                    return pyo.Constraint.Skip
-            elif t == 0:
-                return pyo.Constraint.Skip
-            else:
-                stage_cost_expr = cost_fn(m, t)  # now it's an expression
-                return (options.gamma / options.sampling_time * (1 - t**2)) * m.dphidt[t] == stage_cost_expr - m.ss_obj_value
 
-        if options.custom_objective:
-            from model_equations import custom_objective
-            m.terminal_cost = pyo.Constraint(m.time, rule=_custom_terminal_cost_rule)
-        else: 
+        if not options.custom_objective:
             m.terminal_cost = pyo.Constraint(m.time, rule=_terminal_cost_rule)
 
-        return m
+        return m, c
 
     deriv_vars, state_vars = _get_derivative_and_state_vars(m)
 
-    m = _add_dphidt(m)
+    m, c = _add_dphidt(m)
 
     m.gamma = options.gamma
     m.sampling_time = options.sampling_time
@@ -609,6 +608,30 @@ def _infinite_block_gen(m, options):
     discretizer.apply_to(m, ncp=options.ncp_infinite, nfe=options.nfe_infinite, wrt=m.time, scheme='LAGRANGE-LEGENDRE')
 
     equations_write(m)
+
+    # Custom terminal cost added AFTER equations_write so that m.F, m.qF, m.zF
+    # (defined inside equations_write) are available when the constraint rule is evaluated.
+    if options.custom_objective:
+        from model_equations import custom_objective
+        cost_fn = custom_objective(m, options)
+
+        def _custom_terminal_cost_rule(m, t):
+            setpoint_stage_cost = sum(
+                c[i] * (_add_time_indexed_expression(m, var_name, t) - m.steady_state_values[var_name])**2
+                for i, var_name in enumerate(m.stage_cost_index)
+            )
+            if t == 1:
+                if options.endpoint_constraints:
+                    return setpoint_stage_cost <= 1e-6
+                else:
+                    return pyo.Constraint.Skip
+            elif t == 0:
+                return pyo.Constraint.Skip
+            else:
+                stage_cost_expr = cost_fn(m, t)
+                return (options.gamma / options.sampling_time * (1 - t**2)) * m.dphidt[t] == stage_cost_expr - m.ss_obj_value
+
+        m.terminal_cost = pyo.Constraint(m.time, rule=_custom_terminal_cost_rule)
 
     m.endpoint_constraints = options.endpoint_constraints
 

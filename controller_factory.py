@@ -1,6 +1,50 @@
 import pyomo.environ as pyo
 from make_model import _make_infinite_horizon_model, _make_finite_horizon_model
 from indexing_tools import _add_time_indexed_expression
+from infNMPC_options import _import_settings
+import idaes
+from idaes.core.solvers import use_idaes_solver_configuration_defaults
+
+# Solver Settings
+use_idaes_solver_configuration_defaults()
+idaes.cfg.ipopt.options.linear_solver = "ma57" # "ma27"
+idaes.cfg.ipopt.options.OF_ma57_automatic_scaling = "yes"
+idaes.cfg.ipopt.options.max_iter = 6000
+idaes.cfg.ipopt.options.halt_on_ampl_error = "yes"
+idaes.cfg.ipopt.options.bound_relax_factor = 0
+
+def _build_interior_slack_penalty(m, options):
+    """
+    Build a Pyomo expression penalising slack variables at interior collocation
+    points (time points that are not on finite-element boundaries).
+
+    The economic stage cost is summed only at FE endpoints to preserve the MPC
+    Lyapunov proof. Slack variables at interior collocation points therefore
+    fall outside the objective and can grow without bound, corrupting simulation
+    trajectories. This expression adds an explicit penalty for them so the full
+    objective reads:
+
+        sum(stage_cost(t) for t in FE_endpoints) + interior_slack_penalty
+
+    Returns 0 if options.includes_slacks is False or no interior slack terms
+    are found.
+    """
+    if not getattr(options, 'includes_slacks', False):
+        return 0
+
+    fe_endpoints = set(m.time.get_finite_elements())
+    terms = []
+    for sv_name in options.slack_index:
+        sv = getattr(m, sv_name, None)
+        if sv is None:
+            continue
+        for idx in sv:
+            t = idx[-1] if isinstance(idx, tuple) else idx
+            if t not in fe_endpoints:
+                terms.append(sv[idx])
+
+    return options.slack_rho * pyo.quicksum(terms) if terms else 0
+
 
 def _make_infinite_horizon_controller(options, data=None):
     """
@@ -28,6 +72,12 @@ def _make_infinite_horizon_controller(options, data=None):
 
     m.finite_block.stage_cost_index = pyo.Set(initialize=lambda m: list(m.CV_index) + list(m.MV_index))
 
+    # Interior slack penalty applies to both blocks
+    interior_slack_penalty = (
+        _build_interior_slack_penalty(m.finite_block, options) +
+        _build_interior_slack_penalty(m.infinite_block, options)
+    )
+
     # Define the objective function
     if options.custom_objective:
         from model_equations import custom_objective
@@ -46,7 +96,7 @@ def _make_infinite_horizon_controller(options, data=None):
                 # Add terminal cost (same as non-custom case)
                 terminal_cost = m.infinite_block.phi[m.infinite_block.time.prev(m.infinite_block.time.last())] * options.beta / options.sampling_time
 
-            return stage_cost + terminal_cost
+            return stage_cost + terminal_cost + interior_slack_penalty
         
         c = options.stage_cost_weights
         finite_elements = m.finite_block.time.get_finite_elements()
@@ -96,7 +146,7 @@ def _make_infinite_horizon_controller(options, data=None):
 
             terminal_cost = obj_expression_infinite * options.beta / options.sampling_time
 
-            return stage_cost + terminal_cost
+            return stage_cost + terminal_cost + interior_slack_penalty
     else:
 
         def objective_rule(m):
@@ -114,7 +164,7 @@ def _make_infinite_horizon_controller(options, data=None):
                         for mv in m.finite_block.MV_index:
                             mv_expr = _add_time_indexed_expression(m.finite_block, mv, t) - _add_time_indexed_expression(m.finite_block, mv, t_prev)
                             stage_cost += options.input_suppression_factor * mv_expr**2
-                
+
                 for t in m.infinite_block.time:
                     if t > m.infinite_block.time.first():
                         t_prev = m.infinite_block.time.prev(t)
@@ -128,7 +178,7 @@ def _make_infinite_horizon_controller(options, data=None):
                 # Add terminal cost (same as non-custom case)
                 terminal_cost = m.infinite_block.phi[m.infinite_block.time.prev(m.infinite_block.time.last())] * options.beta / options.sampling_time
 
-            return stage_cost + terminal_cost
+            return stage_cost + terminal_cost + interior_slack_penalty
 
     m.objective = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
 
@@ -181,13 +231,12 @@ def _make_finite_horizon_controller(options, data=None):
 
         # get the time-dependent cost function
         cost_fn = custom_objective(m, options)
+        interior_slack_penalty = _build_interior_slack_penalty(m, options)
 
         def objective_rule(m):
-            # Sum the custom stage cost across the finite time horizon
             finite_elements = m.time.get_finite_elements()
             stage_cost = sum(cost_fn(m, t) - m.ss_obj_value for t in finite_elements if t != m.time.first())
-
-            return stage_cost
+            return stage_cost + interior_slack_penalty
 
     else:
         def objective_rule(m):
@@ -256,3 +305,63 @@ def _make_finite_horizon_controller(options, data=None):
     # solver.solve(m, tee=options.tee_flag)
 
     # return m
+
+
+def _make_plant(options):
+    """
+    Build and solve the dynamic simulation model (plant).
+
+    This function initializes the plant model using finite-horizon settings,
+    fixes manipulated variables (MVs), and solves the model to obtain an initial
+    steady-state or consistent profile.
+
+    Args:
+        options (Namespace): Simulation and solver configuration parameters.
+
+    Returns:
+        pyo.ConcreteModel: The initialized and solved plant model.
+    """
+    m = pyo.ConcreteModel()
+    plant_options = _import_settings()
+    plant_options.nfe_finite = 1
+    plant_options.infinite_horizon = False
+
+    m = _make_finite_horizon_model(m, plant_options)
+
+    print('Generating Plant')
+    
+    for var_name in m.MV_index:
+        var = getattr(m, var_name)
+        var.fix()
+        if options.ncp_finite > 1:
+            getattr(m, f"{var_name}_interpolation_constraints").deactivate()
+    
+    if options.custom_objective:
+        from model_equations import custom_objective
+        cost_fn = custom_objective(m, options)
+        interior_slack_penalty = _build_interior_slack_penalty(m, options)
+
+        def objective_rule(m):
+            finite_elements = m.time.get_finite_elements()
+            return (
+                sum(cost_fn(m, t) - m.ss_obj_value for t in finite_elements if t != m.time.first())
+                + interior_slack_penalty
+            )
+        m.obj = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
+    else:
+        m.obj = pyo.Objective(expr=1)
+
+    print('Plant Initial Solve')
+
+    solver = pyo.SolverFactory('ipopt')
+    solver.solve(m, tee=options.tee_flag)
+
+    return m
+
+
+if __name__ == "__main__":
+    options = _import_settings()
+    plant = _make_plant(options)
+
+    with open("plant_output.txt", "w") as f:
+        plant.pprint(ostream=f)
