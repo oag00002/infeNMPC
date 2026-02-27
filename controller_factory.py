@@ -26,10 +26,10 @@ def _build_interior_slack_penalty(m, options):
 
         sum(stage_cost(t) for t in FE_endpoints) + interior_slack_penalty
 
-    Returns 0 if options.includes_slacks is False or no interior slack terms
+    Returns 0 if options.includes_intermediate_slacks is False or no interior slack terms
     are found.
     """
-    if not getattr(options, 'includes_slacks', False):
+    if not getattr(options, 'includes_intermediate_slacks', False):
         return 0
 
     fe_endpoints = set(m.time.get_finite_elements())

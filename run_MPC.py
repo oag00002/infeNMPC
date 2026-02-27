@@ -104,7 +104,7 @@ def _mpc_loop(options):
     # Prepare plotting data arrays
     io_data_array = []
     time_series = []
-    cpu_time = []
+    solver_time = []
     if options.custom_objective:
         lyap = []
 
@@ -152,15 +152,15 @@ def _mpc_loop(options):
 
         simulation_time = (i + 1) * options.sampling_time
 
-        start_time = time.process_time()
+        start_time = time.perf_counter()
         solver.solve(controller, tee=options.tee_flag)
-        end_time = time.process_time()
+        end_time = time.perf_counter()
 
         # if i == 1:  # Toggle to False to disable model display
         #     with open("model_output.txt", "w") as f:
         #         controller.pprint(ostream=f)
 
-        cpu_time.append(end_time - start_time)
+        solver_time.append(end_time - start_time)
 
         if options.infinite_horizon:
 
@@ -334,7 +334,7 @@ def _mpc_loop(options):
     if options.live_plot and fig is not None:
         _finalize_live_plot(fig)
 
-    _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options)
+    _handle_mpc_results(sim_data, time_series, io_data_array, plant, solver_time, options)
 
 
 if __name__ == "__main__":

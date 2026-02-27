@@ -13,22 +13,22 @@ class Options:
 
     def __init__(self):
         # Simulation control
-        self.num_horizons = 25               # Number of MPC steps
-        self.nfe_finite = 2                 # Finite elements in finite horizon
+        self.num_horizons = 100               # Number of MPC steps
+        self.nfe_finite = 3                 # Finite elements in finite horizon
         self.ncp_finite = 3                  # Collocation points per FE (finite)
         self.sampling_time = 1               # Time between MPC updates (hours)
 
         # Infinite horizon settings
-        self.infinite_horizon = True         # Use infinite horizon NMPC
-        self.nfe_infinite = 1                # Finite elements in infinite horizon
+        self.infinite_horizon = False         # Use infinite horizon NMPC
+        self.nfe_infinite = 3                # Finite elements in infinite horizon
         self.ncp_infinite = 3                # Collocation points per FE (infinite)
 
         # Solver and model options
         self.tee_flag = True           # Print solver output
-        self.endpoint_constraints = False     # Enforce endpoint constraints
+        self.endpoint_constraints = True     # Enforce endpoint constraints
         self.custom_objective = True         # Use economic objective
         self.initialize_with_initial_data = True
-        self.terminal_cost_riemann = True
+        self.terminal_cost_riemann = False
         self.remove_collocation = True
         self.initialization_assist = False
 
@@ -52,12 +52,12 @@ class Options:
             1.0,    # B2 weight
         ]
 
-        self.gamma = 0.05                    # Infinite horizon decay parameter
+        self.gamma = 0.113183                   # Infinite horizon decay parameter
         self.beta = 1.0                      # Terminal cost weight
 
         # Display/Data Output options
-        self.live_plot = True               # Real-time plotting
-        self.plot_end = True                 # Plot at end of simulation
+        self.live_plot = False             # Real-time plotting
+        self.plot_end = True                # Plot at end of simulation
         self.save_data = True                # Save simulation data
         self.save_figure = True              # Save plots to file
 
@@ -72,7 +72,7 @@ class Options:
         # to the standard FE-endpoint stage cost. This prevents the degeneracy
         # where slacks at interior points are outside the objective and can grow
         # without bound, corrupting the simulation trajectory.
-        self.includes_slacks = True
+        self.includes_intermediate_slacks = True
         self.slack_index = [
             "x1eps", "M1eps", "V1eps", "L1eps", "D1eps", "B1eps", "TC1eps",
             "x2eps", "M2eps", "V2eps", "L2eps", "D2eps", "B2eps", "TC2eps",

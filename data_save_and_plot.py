@@ -245,7 +245,7 @@ def _plot_final_results(time_series, io_data_array, plant, show=False):
     return figures, names
 
 
-def _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options):
+def _handle_mpc_results(sim_data, time_series, io_data_array, plant, solver_time, options):
     """
     Post-processing after the MPC loop: saves data, plots, and manages output directories.
 
@@ -292,8 +292,8 @@ def _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, o
             name = re.sub(r'[^a-zA-Z0-9_\-]', '_', raw_name)
             _save_figure(fig, folder_path=folder_path, filename=f"{name}.png")
 
-    average_cpu_time = sum(cpu_time) / len(cpu_time) if cpu_time else 0
-    print(f"Average CPU time per solve: {average_cpu_time:.4f} seconds")
+    average_solver_time = sum(solver_time) / len(solver_time) if solver_time else 0
+    print(f"Average CPU time per solve: {average_solver_time:.4f} seconds")
 
     if options.plot_end:
         plt.show()
