@@ -1,5 +1,7 @@
 import os
 import csv
+import io
+import sys
 import pyomo.contrib.mpc as mpc
 import matplotlib.pyplot as plt
 import numpy as np
@@ -351,3 +353,90 @@ def _save_lyap_csv(lyap, options, filename="lyapunov.csv"):
     })
 
     df.to_csv(full_path, index=False)
+
+
+# ---------------------------------------------------------------------------
+# IPOPT iteration log capture and saving
+# ---------------------------------------------------------------------------
+
+_IPOPT_COLUMNS = ["iter", "objective", "inf_pr", "inf_du", "lg_mu", "norm_d", "lg_rg", "alpha_du", "alpha_pr", "ls"]
+# Matches a single IPOPT iteration line: integer then exactly 9 more whitespace-separated tokens.
+_IPOPT_ITER_RE = re.compile(
+    r'^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$'
+)
+
+
+def _parse_ipopt_log(log_text):
+    """Parse captured IPOPT output and return a list of dicts, one per iteration."""
+    rows = []
+    for line in log_text.splitlines():
+        m = _IPOPT_ITER_RE.match(line)
+        if m:
+            # IPOPT appends a step-type letter to alpha_pr (e.g. '1.09e-02f'); strip it.
+            alpha_pr = re.sub(r'[a-zA-Z]+$', '', m.group(9))
+            rows.append({
+                "iter":      int(m.group(1)),
+                "objective": m.group(2),
+                "inf_pr":    m.group(3),
+                "inf_du":    m.group(4),
+                "lg_mu":     m.group(5),
+                "norm_d":    m.group(6),
+                "lg_rg":     m.group(7),
+                "alpha_du":  m.group(8),
+                "alpha_pr":  alpha_pr,
+                "ls":        m.group(10).strip(),
+            })
+    return rows
+
+
+def _solve_and_log_ipopt(solver, model, mpc_iter, label, tee_flag, log_dir="ipopt_logs"):
+    """
+    Solve *model* with *solver*, capture the IPOPT iteration log, and write it
+    to ``<log_dir>/iter_<mpc_iter:04d>_<label>.csv``.
+
+    Parameters
+    ----------
+    solver    : Pyomo SolverFactory instance
+    model     : Pyomo model to solve
+    mpc_iter  : integer MPC loop index (used for file naming)
+    label     : string identifier, e.g. 'controller' or 'plant'
+    tee_flag  : bool — if True, solver output is also printed to the console
+    log_dir   : directory for CSV files (created if absent)
+
+    Returns
+    -------
+    Pyomo solver result object
+    """
+    buf = io.StringIO()
+
+    class _Tee:
+        """Mirror writes to both the real stdout and a capture buffer."""
+        def __init__(self, stream, buf):
+            self._stream = stream
+            self._buf = buf
+        def write(self, data):
+            self._stream.write(data)
+            self._buf.write(data)
+        def flush(self):
+            self._stream.flush()
+            self._buf.flush()
+        def __getattr__(self, name):
+            return getattr(self._stream, name)
+
+    old_stdout = sys.stdout
+    sys.stdout = _Tee(old_stdout, buf) if tee_flag else buf
+    try:
+        result = solver.solve(model, tee=True)
+    finally:
+        sys.stdout = old_stdout
+
+    rows = _parse_ipopt_log(buf.getvalue())
+
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, f"iter_{mpc_iter:04d}_{label}.csv")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_IPOPT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return result

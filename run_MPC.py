@@ -4,7 +4,7 @@ import idaes
 from idaes.core.solvers import use_idaes_solver_configuration_defaults
 from infNMPC_options import _import_settings
 from tqdm import tqdm
-from data_save_and_plot import _finalize_live_plot, _setup_live_plot, _update_live_plot, _handle_mpc_results, _save_epsilon, _plot_lyap, _save_lyap_csv
+from data_save_and_plot import _finalize_live_plot, _setup_live_plot, _update_live_plot, _handle_mpc_results, _save_epsilon, _plot_lyap, _save_lyap_csv, _solve_and_log_ipopt
 from indexing_tools import _add_time_indexed_expression
 import numpy as np
 from pyomo.contrib.mpc import ScalarData
@@ -20,7 +20,7 @@ idaes.cfg.ipopt.options.linear_solver = "ma57" # "ma27"
 idaes.cfg.ipopt.options.OF_ma57_automatic_scaling = "yes"
 idaes.cfg.ipopt.options.max_iter = 6000
 idaes.cfg.ipopt.options.halt_on_ampl_error = "yes"
-idaes.cfg.ipopt.options.bound_relax_factor = 1e-8
+idaes.cfg.ipopt.options.bound_relax_factor = 1e-6
 idaes.cfg.ipopt.options.tol = 1e-4
 idaes.cfg.ipopt.options.acceptable_tol = 1e-4
 # idaes.cfg.ipopt.options.expect_infeasible_problem = "no"
@@ -71,6 +71,8 @@ def _mpc_loop(options):
     idaes.cfg.ipopt.options.warm_start_init_point = "yes"
     idaes.cfg.ipopt.options.warm_start_bound_push = 1e-6
     idaes.cfg.ipopt.options.warm_start_mult_bound_push = 1e-6
+    idaes.cfg.ipopt.options.warm_start_same_structure = "yes"
+    idaes.cfg.ipopt.options.mu_init = 1e-6
 
     # Get full initial TimeSeriesData
     sim_data = plant.interface.get_data_at_time([plant.time.first()])
@@ -99,7 +101,7 @@ def _mpc_loop(options):
             sim_data._data[key][0] = None  # Nullify non-state values
 
     new_data_time = list(plant.time)[1:]
-    solver = pyo.SolverFactory('ipopt')
+    solver = pyo.SolverFactory('ipopt_v2')
 
     # Prepare plotting data arrays
     io_data_array = []
@@ -153,7 +155,7 @@ def _mpc_loop(options):
         simulation_time = (i + 1) * options.sampling_time
 
         start_time = time.perf_counter()
-        solver.solve(controller, tee=options.tee_flag)
+        _solve_and_log_ipopt(solver, controller, i, "controller", options.tee_flag)
         end_time = time.perf_counter()
 
         # if i == 1:  # Toggle to False to disable model display
@@ -265,7 +267,7 @@ def _mpc_loop(options):
             )
 
         plant.interface.load_data(input_data, time_points=new_data_time)
-        solver.solve(plant, tee=options.tee_flag)
+        _solve_and_log_ipopt(solver, plant, i, "plant", options.tee_flag)
 
         # Get CV and MV values at the sampling time
         full_data = plant.interface.get_data_at_time(options.sampling_time)

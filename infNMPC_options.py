@@ -13,13 +13,13 @@ class Options:
 
     def __init__(self):
         # Simulation control
-        self.num_horizons = 100               # Number of MPC steps
-        self.nfe_finite = 3                 # Finite elements in finite horizon
+        self.num_horizons = 25               # Number of MPC steps
+        self.nfe_finite = 2                 # Finite elements in finite horizon
         self.ncp_finite = 3                  # Collocation points per FE (finite)
         self.sampling_time = 1               # Time between MPC updates (hours)
 
         # Infinite horizon settings
-        self.infinite_horizon = False         # Use infinite horizon NMPC
+        self.infinite_horizon = True         # Use infinite horizon NMPC
         self.nfe_infinite = 3                # Finite elements in infinite horizon
         self.ncp_infinite = 3                # Collocation points per FE (infinite)
 
