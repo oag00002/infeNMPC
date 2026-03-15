@@ -2,8 +2,8 @@
 Controller classes for finite- and infinite-horizon NMPC.
 """
 import pyomo.environ as pyo
-from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model
-from .model_equations import _load_model
+from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver
+from .model_equations import _get_model
 from .indexing_tools import _add_time_indexed_expression
 from .infNMPC_options import Options
 
@@ -25,7 +25,7 @@ class Controller:
     def __init__(self, options: Options):
         self.options = options
         self._model = None
-        self._solver = pyo.SolverFactory('ipopt')
+        self._solver = _ipopt_solver()
 
     def solve(self):
         """Solve the controller optimisation problem in place."""
@@ -68,7 +68,7 @@ class InfiniteHorizonController(Controller):
 
         # ---- Objective ----
         if options.custom_objective:
-            custom_objective = _load_model(options.model_name).custom_objective
+            custom_objective = _get_model(options).custom_objective
             cost_fn = custom_objective(m.finite_block, options)
 
             def objective_rule(m):
@@ -261,7 +261,7 @@ class FiniteHorizonController(Controller):
 
         # ---- Objective ----
         if options.custom_objective:
-            custom_objective = _load_model(options.model_name).custom_objective
+            custom_objective = _get_model(options).custom_objective
             cost_fn = custom_objective(m, options)
 
             def objective_rule(m):

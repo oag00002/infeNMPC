@@ -2,7 +2,7 @@
 Plant model for closed-loop NMPC simulations.
 """
 import pyomo.environ as pyo
-from .make_model import _make_finite_horizon_model
+from .make_model import _make_finite_horizon_model, _ipopt_solver
 from .infNMPC_options import Options
 
 
@@ -48,7 +48,7 @@ class Plant:
         m.obj = pyo.Objective(expr=1)
 
         self._model = m
-        self._solver = pyo.SolverFactory('ipopt')
+        self._solver = _ipopt_solver()
 
         print('Plant Initial Solve')
         self.solve()

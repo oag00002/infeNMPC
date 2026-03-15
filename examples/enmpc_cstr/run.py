@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import model  # noqa: E402  (local model.py)
 
-from infeNMPC import Options, _mpc_loop  # noqa: E402
+from infeNMPC import Options, mpc_loop  # noqa: E402
 
 options = Options.for_model_module(
     model,
@@ -53,4 +53,4 @@ options = Options.for_model_module(
 )
 
 if __name__ == '__main__':
-    _mpc_loop(options)
+    mpc_loop(options)

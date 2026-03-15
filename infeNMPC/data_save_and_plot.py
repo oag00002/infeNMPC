@@ -7,6 +7,24 @@ import re
 
 
 def _get_results_folder(options):
+    """
+    Construct and create the hierarchical results directory for the current run.
+
+    The path encodes the key simulation parameters so that results from
+    different configurations are automatically segregated:
+    ``Results/infinite_horizon_{true|false}/finite_horizon_{N}/
+    gamma_{g}/beta_{b}/disturbance_{true|false}/``.
+
+    Parameters
+    ----------
+    options : Options
+        Simulation configuration used to determine the folder path.
+
+    Returns
+    -------
+    str
+        Absolute (or CWD-relative) path to the results directory.
+    """
     if options.infinite_horizon:
         folder_path = os.path.join(
             "Results",
@@ -302,6 +320,22 @@ def _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, o
 import csv
 
 def _save_epsilon(iteration, LHS, options):
+    """
+    Append the minimum epsilon (LHS) value for one MPC iteration to a CSV file.
+
+    Creates ``LHS_values.csv`` in the results folder on the first call and
+    appends subsequent rows. The LHS value is the minimum value of epsilon in
+    [0, 1) that certifies closed-loop stability for that horizon.
+
+    Parameters
+    ----------
+    iteration : int
+        Zero-based MPC iteration index.
+    LHS : float
+        The computed LHS / minimum epsilon value for this iteration.
+    options : Options
+        Simulation configuration used to locate the results folder.
+    """
     folder_path = _get_results_folder(options)
     csv_filename = os.path.join(folder_path, "LHS_values.csv")
 
@@ -318,6 +352,19 @@ def _save_epsilon(iteration, LHS, options):
 
     
 def _plot_lyap(lyap, options):
+    """
+    Plot the Lyapunov function value trajectory over the MPC horizon.
+
+    Displays a blocking figure of the Lyapunov value at each horizon step,
+    useful for verifying closed-loop stability during post-run analysis.
+
+    Parameters
+    ----------
+    lyap : list of float
+        Lyapunov function values recorded at each MPC iteration.
+    options : Options
+        Simulation configuration (currently unused but included for consistency).
+    """
     import numpy as np
     import matplotlib.pyplot as plt
     import threading
@@ -336,6 +383,18 @@ def _plot_lyap(lyap, options):
 
 
 def _save_lyap_csv(lyap, options, filename="lyapunov.csv"):
+    """
+    Save the Lyapunov function trajectory to a CSV file.
+
+    Parameters
+    ----------
+    lyap : list of float
+        Lyapunov function values recorded at each MPC iteration.
+    options : Options
+        Simulation configuration used to locate the results folder.
+    filename : str, optional
+        Output filename. Defaults to ``'lyapunov.csv'``.
+    """
     import numpy as np
     import pandas as pd
     import os
