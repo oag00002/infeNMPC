@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "infeNMPC"
+version = "0.1.0"
+description = "Infinite-horizon economic NMPC framework built on Pyomo and IDAES"
+requires-python = ">=3.8"
+dependencies = [
+    "pyomo",
+    "idaes-pse",
+    "tqdm",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["infeNMPC*"]

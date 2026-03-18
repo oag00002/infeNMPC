@@ -1,2 +1,32 @@
+# Python bytecode
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+
+# Solver output / intermediate files
+model_output.txt
+*.nl
+*.sol
+*.log
+
+# Simulation results (generated at runtime)
+Results/
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+*.ipynb
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
