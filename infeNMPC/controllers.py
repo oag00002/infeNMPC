@@ -1,6 +1,7 @@
 """
 Controller classes for finite- and infinite-horizon NMPC.
 """
+import resource
 import pyomo.environ as pyo
 from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver
 from .model_equations import _get_model
@@ -29,7 +30,10 @@ class Controller:
 
     def solve(self):
         """Solve the controller optimisation problem in place."""
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
         self._solver.solve(self._model, tee=self.options.tee_flag)
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        self.last_solve_time = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
 
     def __getattr__(self, name: str):
         return getattr(self._model, name)

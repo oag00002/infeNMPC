@@ -1,7 +1,6 @@
 import pyomo.environ as pyo
 from tqdm import tqdm
 from pyomo.contrib.mpc import ScalarData
-import time
 
 from .make_model import _ipopt_solver
 from .infNMPC_options import Options, _import_settings
@@ -123,11 +122,8 @@ def mpc_loop(options: Options):
 
         simulation_time = (i + 1) * options.sampling_time
 
-        start_time = time.process_time()
         controller.solve()
-        end_time = time.process_time()
-
-        cpu_time.append(end_time - start_time)
+        cpu_time.append(controller.last_solve_time)
 
         if options.infinite_horizon:
             t_points = controller.finite_block.time
