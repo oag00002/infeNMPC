@@ -158,27 +158,27 @@ def mpc_loop(options: Options):
                 for idx, var_name in enumerate(controller.finite_block.stage_cost_index)
             )
 
-            print("")
-            print("Terminal cost (prev):", terminal_cost_prev)
-            print("Terminal cost (now):", terminal_cost_now)
-            print("First stage cost (prev):", first_stage_cost_prev)
-            print("Penultimate stage cost (now):", penultimate_stage_cost_now)
-            print("Lyapunov Function Value:", pyo.value(controller.lyapunov))
-            lyap.append(pyo.value(controller.lyapunov))
-            if i == 0:
-                lyap.append(pyo.value(controller.lyapunov))
+            # print("")
+            # print("Terminal cost (prev):", terminal_cost_prev)
+            # print("Terminal cost (now):", terminal_cost_now)
+            # print("First stage cost (prev):", first_stage_cost_prev)
+            # print("Penultimate stage cost (now):", penultimate_stage_cost_now)
+            # print("Lyapunov Function Value:", pyo.value(controller.lyapunov))
+            # lyap.append(pyo.value(controller.lyapunov))
+            # if i == 0:
+            #     lyap.append(pyo.value(controller.lyapunov))
 
-            dlyap = lyap[i + 1] - lyap[i]
+            # dlyap = lyap[i + 1] - lyap[i]
 
-            LHS = -(
-                terminal_cost_prev - terminal_cost_now
-                - options.beta * penultimate_stage_cost_now
-            ) / first_stage_cost_prev
+            # LHS = -(
+            #     terminal_cost_prev - terminal_cost_now
+            #     - options.beta * penultimate_stage_cost_now
+            # ) / first_stage_cost_prev
 
-            print("")
-            print(f"Min value of epsilon: {LHS}")
-            print(f"Change in Lyapunov Function Value: {dlyap}")
-            print("")
+            # print("")
+            # print(f"Min value of epsilon: {LHS}")
+            # print(f"Change in Lyapunov Function Value: {dlyap}")
+            # print("")
 
             custom_obj = -(
                 terminal_cost_prev + first_stage_cost_prev
