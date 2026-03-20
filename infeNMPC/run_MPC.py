@@ -9,9 +9,9 @@ from .controllers import InfiniteHorizonController, FiniteHorizonController
 from .initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
 from .data_save_and_plot import (
     _finalize_live_plot, _setup_live_plot, _update_live_plot,
-    _handle_mpc_results, _save_epsilon, _plot_lyap, _save_lyap_csv,
+    _handle_mpc_results,
 )
-from .indexing_tools import _add_time_indexed_expression, _get_variable_key_for_data
+from .indexing_tools import _get_variable_key_for_data
 
 
 def mpc_loop(options: Options):
@@ -75,8 +75,6 @@ def mpc_loop(options: Options):
     io_data_array = []
     time_series = []
     cpu_time = []
-    if options.custom_objective:
-        lyap = []
 
     # Collect initial CV values
     differential_state_keys = set()
@@ -114,100 +112,12 @@ def mpc_loop(options: Options):
 
     loop_iter = tqdm(range(options.num_horizons), desc="Running MPC")
 
-    if options.infinite_horizon:
-        terminal_cost_prev = 1
-        first_stage_cost_prev = 1
-
     for i in loop_iter:
 
         simulation_time = (i + 1) * options.sampling_time
 
         controller.solve()
         cpu_time.append(controller.last_solve_time)
-
-        if options.infinite_horizon:
-            t_points = controller.finite_block.time
-            fe_points = t_points.get_finite_elements()
-
-            if options.endpoint_constraints:
-                terminal_cost_now = pyo.value(
-                    controller.infinite_block.phi[controller.infinite_block.time.last()]
-                    * options.beta / options.sampling_time
-                )
-            else:
-                terminal_cost_now = pyo.value(
-                    controller.infinite_block.phi[
-                        controller.infinite_block.time.prev(controller.infinite_block.time.last())
-                    ]
-                )
-
-            c = options.stage_cost_weights
-
-            penultimate_stage_cost_now = sum(
-                pyo.value(
-                    c[idx] * (
-                        _add_time_indexed_expression(
-                            controller.finite_block, var_name, fe_points[-1]
-                        ) - controller.finite_block.steady_state_values[var_name]
-                    ) ** 2
-                )
-                for idx, var_name in enumerate(controller.finite_block.stage_cost_index)
-            )
-
-            # print("")
-            # print("Terminal cost (prev):", terminal_cost_prev)
-            # print("Terminal cost (now):", terminal_cost_now)
-            # print("First stage cost (prev):", first_stage_cost_prev)
-            # print("Penultimate stage cost (now):", penultimate_stage_cost_now)
-            # print("Lyapunov Function Value:", pyo.value(controller.lyapunov))
-            # lyap.append(pyo.value(controller.lyapunov))
-            # if i == 0:
-            #     lyap.append(pyo.value(controller.lyapunov))
-
-            # dlyap = lyap[i + 1] - lyap[i]
-
-            # LHS = -(
-            #     terminal_cost_prev - terminal_cost_now
-            #     - options.beta * penultimate_stage_cost_now
-            # ) / first_stage_cost_prev
-
-            # print("")
-            # print(f"Min value of epsilon: {LHS}")
-            # print(f"Change in Lyapunov Function Value: {dlyap}")
-            # print("")
-
-            custom_obj = -(
-                terminal_cost_prev + first_stage_cost_prev
-                - terminal_cost_now - penultimate_stage_cost_now
-            )
-
-            if options.save_data:
-                _save_epsilon(i, custom_obj, options)
-
-        if options.infinite_horizon:
-            if options.endpoint_constraints:
-                terminal_cost_prev = pyo.value(
-                    controller.infinite_block.phi[controller.infinite_block.time.last()]
-                    * options.beta / options.sampling_time
-                )
-            else:
-                terminal_cost_prev = pyo.value(
-                    controller.infinite_block.phi[
-                        controller.infinite_block.time.prev(controller.infinite_block.time.last())
-                    ]
-                    * options.beta / options.sampling_time
-                )
-
-            first_stage_cost_prev = sum(
-                pyo.value(
-                    c[idx] * (
-                        _add_time_indexed_expression(
-                            controller.finite_block, var_name, fe_points[1]
-                        ) - controller.finite_block.steady_state_values[var_name]
-                    ) ** 2
-                )
-                for idx, var_name in enumerate(controller.finite_block.stage_cost_index)
-            )
 
         ts_data = controller.interface.get_data_at_time(options.sampling_time)
 
@@ -277,12 +187,6 @@ def mpc_loop(options: Options):
 
         controller.interface.shift_values_by_time(options.sampling_time)
         controller.interface.load_data(tf_data, time_points=t0_controller)
-
-    if options.custom_objective:
-        if options.plot_end:
-            _plot_lyap(lyap, options)
-        if options.save_data:
-            _save_lyap_csv(lyap, options)
 
     if options.live_plot and fig is not None:
         _finalize_live_plot(fig)
