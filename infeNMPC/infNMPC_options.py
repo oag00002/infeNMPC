@@ -58,10 +58,11 @@ class Options:
         If True, warm-start via progressive sampling-time reduction.
     initialization_assist_sampling_time_start : float
         Starting (large) sampling time for the warm-start sequence.
-    live_plot : bool
-        If True, update a live plot at every MPC iteration.
-    plot_end : bool
-        If True, display a summary plot after the run.
+    safe_run : bool
+        If True, overwrite ``io_data.csv`` after every MPC iteration so that
+        CV/MV data are preserved on solver failure or crash.  Slower than the
+        default end-of-run save.  Use with the ``live_plot.py`` watcher for
+        in-process monitoring.
     save_data : bool
         If True, write result CSVs to disk.
     save_figure : bool
@@ -110,8 +111,7 @@ class Options:
     beta: float = 1.0
 
     # Display / data-output options
-    live_plot: bool = False
-    plot_end: bool = True
+    safe_run: bool = False
     save_data: bool = True
     save_figure: bool = True
 

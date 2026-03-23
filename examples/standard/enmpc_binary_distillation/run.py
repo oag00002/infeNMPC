@@ -48,7 +48,6 @@ options = Options.for_model_module(
     tee_flag=False,
     save_data=True,
     save_figure=True,
-    plot_end=True,
 )
 
 if __name__ == '__main__':

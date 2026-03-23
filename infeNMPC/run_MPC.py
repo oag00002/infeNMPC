@@ -8,8 +8,9 @@ from .plant import Plant
 from .controllers import InfiniteHorizonController, FiniteHorizonController
 from .initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
 from .data_save_and_plot import (
-    _finalize_live_plot, _setup_live_plot, _update_live_plot,
     _handle_mpc_results,
+    _get_results_folder,
+    _save_io_csv,
 )
 from .indexing_tools import _get_variable_key_for_data
 
@@ -106,9 +107,7 @@ def mpc_loop(options: Options):
     io_data_array.append(initial_cv_row + initial_mv_row)
     time_series.append(0.0)
 
-    fig, axes = None, None
-    if options.live_plot:
-        fig, axes = _setup_live_plot(plant)
+    safe_run_folder = _get_results_folder(options) if options.safe_run else None
 
     loop_iter = tqdm(range(options.num_horizons), desc="Running MPC")
 
@@ -156,8 +155,8 @@ def mpc_loop(options: Options):
         io_data_array.append(cv_row + mv_row)
         time_series.append(simulation_time)
 
-        if options.live_plot:
-            _update_live_plot(fig, axes, time_series, io_data_array, plant)
+        if options.safe_run:
+            _save_io_csv(time_series, io_data_array, plant, safe_run_folder)
 
         model_data = plant.interface.get_data_at_time(new_data_time)
         model_data.shift_time_points(
@@ -187,9 +186,6 @@ def mpc_loop(options: Options):
 
         controller.interface.shift_values_by_time(options.sampling_time)
         controller.interface.load_data(tf_data, time_points=t0_controller)
-
-    if options.live_plot and fig is not None:
-        _finalize_live_plot(fig)
 
     _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options)
 

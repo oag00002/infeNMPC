@@ -116,98 +116,42 @@ def _save_figure(figure, folder_path=None, filename='figure.png', dpi=300):
         print(f"[Error] Could not save figure to {file_path}: {e}")
 
 
-def _setup_live_plot(plant):
+def _save_io_csv(time_series, io_data_array, plant, folder_path, filename='io_data.csv'):
     """
-    Set up a live plot for visualizing MV and CV variables.
+    Write the full CV/MV trajectory to CSV, overwriting on each call.
 
-    Args:
-        plant: The plant model with MV and CV definitions.
+    Column headers are prefixed with ``CV_`` or ``MV_`` (using the variable's
+    display name) so that the ``live_plot.py`` watcher can identify them
+    without any extra metadata.
 
-    Returns:
-        fig: The matplotlib figure.
-        axes: The axes array for subplots.
+    Parameters
+    ----------
+    time_series : list of float
+        Simulation time at each row.
+    io_data_array : list of list
+        Each entry is ``[cv_values..., mv_values...]`` for one time step.
+    plant : Plant
+        Provides ``CV_index``, ``MV_index``, ``CV_display_names``, and
+        ``MV_display_names``.
+    folder_path : str
+        Directory where the file is written.
+    filename : str, optional
+        Output filename. Defaults to ``'io_data.csv'``.
     """
-    plt.ion()
-    num_MV = len(plant.MV_display_names)
-    num_CV = len(plant.CV_display_names)
-    num_rows = max(num_MV, num_CV)
+    cv_headers = [f"CV_{plant.CV_display_names[j]}" for j in range(len(plant.CV_index))]
+    mv_headers = [f"MV_{plant.MV_display_names[j]}" for j in range(len(plant.MV_index))]
+    headers = ["Time"] + cv_headers + mv_headers
 
-    screen_width = 1920
-    screen_height = 1080
-    dpi = 100
-    fig_width = screen_width / dpi
-    fig_height = screen_height / dpi
-
-    fig, axes = plt.subplots(num_rows, 2, figsize=(fig_width, fig_height), sharex=True)
-    fig.suptitle("Live MPC Simulation")
-    return fig, axes
-
-
-def _update_live_plot(fig, axes, time_series, io_data_array, plant):
-    """
-    Update the live plot with current simulation data.
-
-    Args:
-        fig: Matplotlib figure object.
-        axes: Array of subplot axes.
-        time_series: List of simulation time points.
-        io_data_array: List of CV and MV data at each time.
-        plant: The plant model with display names and steady state values.
-
-    Returns:
-        None
-    """
-    io_np = np.array(io_data_array)
-    time_label = f"${plant.time_display_name[0]}$"
-
-    # Ensure axes is 2D for uniform indexing
-    axes = np.atleast_2d(axes)
-
-    for j, var_name in enumerate(plant.CV_index):
-        ax = axes[j, 0] if axes.shape[1] > 1 else axes[j]
-        ax.cla()
-        display_name = plant.CV_display_names[j]
-        ax.plot(time_series, io_np[:, j], label="Trajectory")
-        sp = plant.steady_state_values.get(var_name, None)
-        if sp is not None:
-            ax.axhline(y=sp, color='r', linestyle='--', label="Setpoint")
-        ax.set_ylabel(f"${display_name}$")
-        ax.set_xlabel(time_label)
-        ax.set_title(f"$\\mathrm{{CV}}_{{{j+1}}}:\\;{display_name}\\;\\mathrm{{vs.}}\\;\\mathrm{{Time}}$")
-        ax.grid(True)
-        ax.legend()
-
-    for j, var_name in enumerate(plant.MV_index):
-        ax = axes[j, 1] if axes.shape[1] > 1 else axes[j + len(plant.CV_index)]
-        ax.cla()
-        display_name = plant.MV_display_names[j]
-        mv_index = len(plant.CV_index) + j
-        ax.plot(time_series, io_np[:, mv_index], label="Trajectory")
-        sp = plant.steady_state_values.get(var_name, None)
-        if sp is not None:
-            ax.axhline(y=sp, color='r', linestyle='--', label="Setpoint")
-        ax.set_ylabel(f"${display_name}$")
-        ax.set_xlabel(time_label)
-        ax.set_title(f"$\\mathrm{{MV}}_{{{j+1}}}:\\;{display_name}\\;\\mathrm{{vs.}}\\;\\mathrm{{Time}}$")
-        ax.grid(True)
-        ax.legend()
-
-    plt.tight_layout()
-    plt.pause(0.01)
-
-
-def _finalize_live_plot(fig):
-    """
-    Finalize and close the interactive live plot.
-
-    Args:
-        fig: Matplotlib figure object.
-
-    Returns:
-        None
-    """
-    plt.ioff()
-    plt.close(fig)
+    os.makedirs(folder_path, exist_ok=True)
+    file_path = os.path.join(folder_path, filename)
+    try:
+        with open(file_path, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(headers)
+            for t, row in zip(time_series, io_data_array):
+                writer.writerow([t] + ['' if v is None else v for v in row])
+    except Exception as e:
+        print(f"[Error] Could not save IO data to {file_path}: {e}")
 
 
 def _plot_final_results(time_series, io_data_array, plant, show=False):
@@ -310,11 +254,10 @@ def _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, o
             name = re.sub(r'[^a-zA-Z0-9_\-]', '_', raw_name)
             _save_figure(fig, folder_path=folder_path, filename=f"{name}.png")
 
+    plt.close('all')
+
     average_cpu_time = sum(cpu_time) / len(cpu_time) if cpu_time else 0
     print(f"Average CPU time per solve: {average_cpu_time:.4f} seconds")
-
-    if options.plot_end:
-        plt.show()
 
 
 import csv

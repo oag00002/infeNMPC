@@ -27,11 +27,11 @@ options = Options.for_model_module(
     num_horizons=400,
     sampling_time=0.0025,
     # ---- Finite-horizon discretization ----
-    nfe_finite=50,
-    ncp_finite=5,
+    nfe_finite=2,
+    ncp_finite=3,
     # ---- Infinite-horizon discretization ----
-    nfe_infinite=10,
-    ncp_infinite=5,
+    nfe_infinite=3,
+    ncp_infinite=3,
     # ---- Controller settings ----
     infinite_horizon=True,
     endpoint_constraints=True,
@@ -40,12 +40,11 @@ options = Options.for_model_module(
     # ---- Cost function ----
     stage_cost_weights=[1, 1e-2, 1e-2, 1e-3],
     gamma=0.015,
-    beta=1.2,
+    beta=1.0,
     # ---- Output ----
     tee_flag=False,
     save_data=True,
     save_figure=True,
-    plot_end=True,
 )
 
 if __name__ == '__main__':
