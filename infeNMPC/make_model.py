@@ -21,11 +21,12 @@ from pyomo.common.collections import ComponentMap
 from pyomo.core.expr.visitor import replace_expressions
 from pyomo.core.expr.visitor import identify_variables
 from pyomo.opt import TerminationCondition
-from .indexing_tools import (
+from .tools.indexing_tools import (
     _get_variable_key_for_data,
     _add_time_indexed_expression,
     _get_derivative_and_state_vars,
 )
+from .tools.collocation_tools import _compute_gamma_from_collocation
 
 
 def _check_optimal(results, label=""):
@@ -467,6 +468,19 @@ def _infinite_block_gen(m, options):
     m.time = ContinuousSet(bounds=(0, 1))
     m = _model.variables_initialize(m)
 
+    # --- Resolve gamma before building constraints that capture it ---
+    # If gamma is not provided, choose it so that the first collocation
+    # point tau_1 satisfies tau_1 = tanh(gamma * sampling_time), i.e.
+    # gamma = atanh(tau_1) / sampling_time.
+    if options.gamma is None:
+        gamma = _compute_gamma_from_collocation(
+            options.nfe_infinite, options.ncp_infinite, options.sampling_time
+        )
+        print(f"Auto-selected gamma = {gamma:.6g} "
+              f"(tau_1 = first collocation point, sampling_time = {options.sampling_time})")
+    else:
+        gamma = options.gamma
+
     def _add_dphidt(m):
         # --- phi: primary terminal cost integral ---
         m.phi = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
@@ -486,7 +500,7 @@ def _infinite_block_gen(m, options):
                 if t == 0 or t == 1:
                     return pyo.Constraint.Skip
                 return (
-                    (options.gamma / options.sampling_time * (1 - t**2))
+                    (gamma / options.sampling_time * (1 - t**2))
                     * m.dphidt[t] == cost_fn(m, t) - m.ss_obj_value
                 )
 
@@ -504,7 +518,7 @@ def _infinite_block_gen(m, options):
                     for i, var_name in enumerate(m.stage_cost_index)
                 )
                 return (
-                    (options.gamma / options.sampling_time * (1 - t**2))
+                    (gamma / options.sampling_time * (1 - t**2))
                     * m.dphidt[t] == stage_cost
                 )
 
@@ -531,7 +545,7 @@ def _infinite_block_gen(m, options):
                 for i, cv in enumerate(cv_list)
             )
             return (
-                (options.gamma / options.sampling_time * (1 - t**2))
+                (gamma / options.sampling_time * (1 - t**2))
                 * m.dphidt_track[t] == tracking_cost
             )
 
@@ -542,7 +556,7 @@ def _infinite_block_gen(m, options):
     deriv_vars, state_vars = _get_derivative_and_state_vars(m)
     m = _add_dphidt(m)
 
-    m.gamma = options.gamma
+    m.gamma = gamma
     m.sampling_time = options.sampling_time
 
     deriv_vars, state_vars = _get_derivative_and_state_vars(m)

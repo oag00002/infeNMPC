@@ -6,13 +6,13 @@ from .make_model import _ipopt_solver
 from .infNMPC_options import Options, _import_settings
 from .plant import Plant
 from .controllers import InfiniteHorizonController, FiniteHorizonController
-from .initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
+from .tools.initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
 from .data_save_and_plot import (
     _handle_mpc_results,
     _get_results_folder,
     _save_io_csv,
 )
-from .indexing_tools import _get_variable_key_for_data, _add_time_indexed_expression
+from .tools.indexing_tools import _get_variable_key_for_data, _add_time_indexed_expression
 
 
 def mpc_loop(options: Options):

@@ -6,7 +6,7 @@ never breaks existing code — callers that don't set the new field simply
 get the default.
 """
 from dataclasses import dataclass, field, replace
-from typing import Any, List
+from typing import Any, List, Optional
 
 
 @dataclass
@@ -50,8 +50,13 @@ class Options:
         Weighting factor for the move-suppression penalty.
     stage_cost_weights : list of float
         Per-variable weights for the quadratic tracking stage cost.
-    gamma : float
+    gamma : float or None
         Time-compression parameter for the infinite-horizon transformation.
+        If ``None`` (the default), gamma is chosen automatically so that the
+        first collocation point in the infinite block satisfies
+        ``tau_1 = tanh(gamma * sampling_time)``; i.e.
+        ``gamma = atanh(tau_1) / sampling_time``.  Once computed it is stored
+        on the infinite-horizon block as ``infinite_block.gamma``.
     beta : float
         Weighting factor on the terminal cost relative to the stage cost.
     initialization_assist : bool
@@ -107,7 +112,7 @@ class Options:
 
     # Cost function parameters
     stage_cost_weights: List[float] = field(default_factory=lambda: [1.0, 1.0, 1 / 600])
-    gamma: float = 0.0375847
+    gamma: Optional[float] = None
     beta: float = 1.0
 
     # Lyapunov stability constraint

@@ -5,7 +5,7 @@ import resource
 import pyomo.environ as pyo
 from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver, _check_optimal
 from .model_equations import _get_model
-from .indexing_tools import _add_time_indexed_expression
+from .tools.indexing_tools import _add_time_indexed_expression
 from .infNMPC_options import Options
 
 
@@ -123,7 +123,7 @@ class InfiniteHorizonController(Controller):
                             for i, var_name in enumerate(m.infinite_block.stage_cost_index)
                         )
                         obj_infinite += tracking * (tau - tau_prev) / (
-                            options.gamma / options.sampling_time * (1 - tau ** 2)
+                            m.infinite_block.gamma / options.sampling_time * (1 - tau ** 2)
                         )
                         tau_prev = tau
 
