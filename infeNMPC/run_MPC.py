@@ -12,7 +12,7 @@ from .data_save_and_plot import (
     _get_results_folder,
     _save_io_csv,
 )
-from .indexing_tools import _get_variable_key_for_data
+from .indexing_tools import _get_variable_key_for_data, _add_time_indexed_expression
 
 
 def mpc_loop(options: Options):
@@ -113,10 +113,40 @@ def mpc_loop(options: Options):
 
     for i in loop_iter:
 
+        if i == 10:
+            with open("model_output.txt", "w") as f:
+                controller.pprint(ostream=f)
+
         simulation_time = (i + 1) * options.sampling_time
 
         controller.solve()
         cpu_time.append(controller.last_solve_time)
+
+        # Update Lyapunov stability constraint parameters for next iteration
+        if options.lyap_flag:
+            if options.infinite_horizon:
+                lyap_block = controller.infinite_block
+                stage_block = controller.finite_block
+            else:
+                lyap_block = controller
+                stage_block = controller
+            V_current = pyo.value(lyap_block.phi_track[lyap_block.time.last()])
+            cv_list = list(stage_block.CV_index)
+            c_raw = options.stage_cost_weights or []
+            c_cv = c_raw[:len(cv_list)] if len(c_raw) >= len(cv_list) else [1.0] * len(cv_list)
+            t_first_fe = next(
+                t for t in stage_block.time.get_finite_elements()
+                if t > stage_block.time.first()
+            )
+            first_stage_cost = sum(
+                c_cv[j] * (
+                    pyo.value(_add_time_indexed_expression(stage_block, cv, t_first_fe))
+                    - stage_block.steady_state_values[cv]
+                ) ** 2
+                for j, cv in enumerate(cv_list)
+            )
+            lyap_block.V_prev.set_value(V_current)
+            lyap_block.first_stage_cost_prev.set_value(first_stage_cost)
 
         ts_data = controller.interface.get_data_at_time(options.sampling_time)
 

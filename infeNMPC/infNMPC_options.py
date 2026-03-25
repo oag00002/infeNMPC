@@ -110,6 +110,10 @@ class Options:
     gamma: float = 0.0375847
     beta: float = 1.0
 
+    # Lyapunov stability constraint
+    lyap_flag: bool = False
+    lyap_epsilon: float = 0.01
+
     # Display / data-output options
     safe_run: bool = False
     save_data: bool = True
