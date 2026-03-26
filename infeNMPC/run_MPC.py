@@ -1,18 +1,18 @@
 import pyomo.environ as pyo
 from tqdm import tqdm
 from pyomo.contrib.mpc import ScalarData
-import time
 
 from .make_model import _ipopt_solver
 from .infNMPC_options import Options, _import_settings
 from .plant import Plant
 from .controllers import InfiniteHorizonController, FiniteHorizonController
-from .initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
+from .tools.initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
 from .data_save_and_plot import (
-    _finalize_live_plot, _setup_live_plot, _update_live_plot,
-    _handle_mpc_results, _save_epsilon, _plot_lyap, _save_lyap_csv,
+    _handle_mpc_results,
+    _get_results_folder,
+    _save_io_csv,
 )
-from .indexing_tools import _add_time_indexed_expression, _get_variable_key_for_data
+from .tools.indexing_tools import _get_variable_key_for_data, _add_time_indexed_expression
 
 
 def mpc_loop(options: Options):
@@ -76,8 +76,6 @@ def mpc_loop(options: Options):
     io_data_array = []
     time_series = []
     cpu_time = []
-    if options.custom_objective:
-        lyap = []
 
     # Collect initial CV values
     differential_state_keys = set()
@@ -109,109 +107,46 @@ def mpc_loop(options: Options):
     io_data_array.append(initial_cv_row + initial_mv_row)
     time_series.append(0.0)
 
-    fig, axes = None, None
-    if options.live_plot:
-        fig, axes = _setup_live_plot(plant)
+    safe_run_folder = _get_results_folder(options) if options.safe_run else None
 
     loop_iter = tqdm(range(options.num_horizons), desc="Running MPC")
 
-    if options.infinite_horizon:
-        terminal_cost_prev = 1
-        first_stage_cost_prev = 1
-
     for i in loop_iter:
+
+        if i == 10:
+            with open("model_output.txt", "w") as f:
+                controller.pprint(ostream=f)
 
         simulation_time = (i + 1) * options.sampling_time
 
-        start_time = time.process_time()
         controller.solve()
-        end_time = time.process_time()
+        cpu_time.append(controller.last_solve_time)
 
-        cpu_time.append(end_time - start_time)
-
-        if options.infinite_horizon:
-            t_points = controller.finite_block.time
-            fe_points = t_points.get_finite_elements()
-
-            if options.endpoint_constraints:
-                terminal_cost_now = pyo.value(
-                    controller.infinite_block.phi[controller.infinite_block.time.last()]
-                    * options.beta / options.sampling_time
-                )
+        # Update Lyapunov stability constraint parameters for next iteration
+        if options.lyap_flag:
+            if options.infinite_horizon:
+                lyap_block = controller.infinite_block
+                stage_block = controller.finite_block
             else:
-                terminal_cost_now = pyo.value(
-                    controller.infinite_block.phi[
-                        controller.infinite_block.time.prev(controller.infinite_block.time.last())
-                    ]
-                )
-
-            c = options.stage_cost_weights
-
-            penultimate_stage_cost_now = sum(
-                pyo.value(
-                    c[idx] * (
-                        _add_time_indexed_expression(
-                            controller.finite_block, var_name, fe_points[-1]
-                        ) - controller.finite_block.steady_state_values[var_name]
-                    ) ** 2
-                )
-                for idx, var_name in enumerate(controller.finite_block.stage_cost_index)
+                lyap_block = controller
+                stage_block = controller
+            V_current = pyo.value(lyap_block.phi_track[lyap_block.time.last()])
+            track_list = list(stage_block.CV_index) + list(stage_block.MV_index)
+            c_raw = options.stage_cost_weights or []
+            c_track = c_raw[:len(track_list)] if len(c_raw) >= len(track_list) else [1.0] * len(track_list)
+            t_first_fe = next(
+                t for t in stage_block.time.get_finite_elements()
+                if t > stage_block.time.first()
             )
-
-            # print("")
-            # print("Terminal cost (prev):", terminal_cost_prev)
-            # print("Terminal cost (now):", terminal_cost_now)
-            # print("First stage cost (prev):", first_stage_cost_prev)
-            # print("Penultimate stage cost (now):", penultimate_stage_cost_now)
-            # print("Lyapunov Function Value:", pyo.value(controller.lyapunov))
-            # lyap.append(pyo.value(controller.lyapunov))
-            # if i == 0:
-            #     lyap.append(pyo.value(controller.lyapunov))
-
-            # dlyap = lyap[i + 1] - lyap[i]
-
-            # LHS = -(
-            #     terminal_cost_prev - terminal_cost_now
-            #     - options.beta * penultimate_stage_cost_now
-            # ) / first_stage_cost_prev
-
-            # print("")
-            # print(f"Min value of epsilon: {LHS}")
-            # print(f"Change in Lyapunov Function Value: {dlyap}")
-            # print("")
-
-            custom_obj = -(
-                terminal_cost_prev + first_stage_cost_prev
-                - terminal_cost_now - penultimate_stage_cost_now
+            first_stage_cost = sum(
+                c_track[j] * (
+                    pyo.value(_add_time_indexed_expression(stage_block, var, t_first_fe))
+                    - stage_block.steady_state_values[var]
+                ) ** 2
+                for j, var in enumerate(track_list)
             )
-
-            if options.save_data:
-                _save_epsilon(i, custom_obj, options)
-
-        if options.infinite_horizon:
-            if options.endpoint_constraints:
-                terminal_cost_prev = pyo.value(
-                    controller.infinite_block.phi[controller.infinite_block.time.last()]
-                    * options.beta / options.sampling_time
-                )
-            else:
-                terminal_cost_prev = pyo.value(
-                    controller.infinite_block.phi[
-                        controller.infinite_block.time.prev(controller.infinite_block.time.last())
-                    ]
-                    * options.beta / options.sampling_time
-                )
-
-            first_stage_cost_prev = sum(
-                pyo.value(
-                    c[idx] * (
-                        _add_time_indexed_expression(
-                            controller.finite_block, var_name, fe_points[1]
-                        ) - controller.finite_block.steady_state_values[var_name]
-                    ) ** 2
-                )
-                for idx, var_name in enumerate(controller.finite_block.stage_cost_index)
-            )
+            lyap_block.V_prev.set_value(V_current)
+            lyap_block.first_stage_cost_prev.set_value(first_stage_cost)
 
         ts_data = controller.interface.get_data_at_time(options.sampling_time)
 
@@ -250,8 +185,8 @@ def mpc_loop(options: Options):
         io_data_array.append(cv_row + mv_row)
         time_series.append(simulation_time)
 
-        if options.live_plot:
-            _update_live_plot(fig, axes, time_series, io_data_array, plant)
+        if options.safe_run:
+            _save_io_csv(time_series, io_data_array, plant, safe_run_folder)
 
         model_data = plant.interface.get_data_at_time(new_data_time)
         model_data.shift_time_points(
@@ -281,15 +216,6 @@ def mpc_loop(options: Options):
 
         controller.interface.shift_values_by_time(options.sampling_time)
         controller.interface.load_data(tf_data, time_points=t0_controller)
-
-    if options.custom_objective:
-        if options.plot_end:
-            _plot_lyap(lyap, options)
-        if options.save_data:
-            _save_lyap_csv(lyap, options)
-
-    if options.live_plot and fig is not None:
-        _finalize_live_plot(fig)
 
     _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options)
 

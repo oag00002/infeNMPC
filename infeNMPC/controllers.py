@@ -1,10 +1,11 @@
 """
 Controller classes for finite- and infinite-horizon NMPC.
 """
+import resource
 import pyomo.environ as pyo
-from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver
+from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver, _check_optimal
 from .model_equations import _get_model
-from .indexing_tools import _add_time_indexed_expression
+from .tools.indexing_tools import _add_time_indexed_expression
 from .infNMPC_options import Options
 
 
@@ -29,7 +30,11 @@ class Controller:
 
     def solve(self):
         """Solve the controller optimisation problem in place."""
-        self._solver.solve(self._model, tee=self.options.tee_flag)
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        results = self._solver.solve(self._model, tee=self.options.tee_flag)
+        _check_optimal(results)
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        self.last_solve_time = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
 
     def __getattr__(self, name: str):
         return getattr(self._model, name)
@@ -78,54 +83,15 @@ class InfiniteHorizonController(Controller):
                     for t in finite_elements
                     if t != m.finite_block.time.first()
                 )
-                if options.endpoint_constraints:
-                    terminal_cost = (
-                        m.infinite_block.phi[m.infinite_block.time.last()]
-                        * options.beta / options.sampling_time
-                    )
-                else:
-                    terminal_cost = (
-                        m.infinite_block.phi[
-                            m.infinite_block.time.prev(m.infinite_block.time.last())
-                        ]
-                        * options.beta / options.sampling_time
-                    )
+                terminal_cost = (
+                    m.infinite_block.phi[m.infinite_block.time.last()]
+                    * options.beta / options.sampling_time
+                )
                 return stage_cost + terminal_cost
 
-            # Lyapunov expression (quadratic approximation for monitoring)
-            c = options.stage_cost_weights
-            finite_elements = m.finite_block.time.get_finite_elements()
-            lyap_stage = sum(
-                sum(
-                    c[i] * (
-                        _add_time_indexed_expression(m.finite_block, var_name, t)
-                        - m.finite_block.steady_state_values[var_name]
-                    ) ** 2
-                    for i, var_name in enumerate(m.finite_block.stage_cost_index)
-                )
-                for t in finite_elements
-                if t != m.finite_block.time.first()
-            )
-
-            tau_list = list(m.infinite_block.time.data())
-            tau_prev = 0
-            lyap_infinite = 0
-            for tau in tau_list:
-                if m.infinite_block.time.first() < tau < m.infinite_block.time.last():
-                    tracking = sum(
-                        c[i] * (
-                            _add_time_indexed_expression(m.infinite_block, var_name, tau)
-                            - m.infinite_block.steady_state_values[var_name]
-                        ) ** 2
-                        for i, var_name in enumerate(m.infinite_block.stage_cost_index)
-                    )
-                    lyap_infinite += tracking * (tau - tau_prev) / (
-                        options.gamma / options.sampling_time * (1 - tau ** 2)
-                    )
-                    tau_prev = tau
-
             m.lyapunov = pyo.Expression(
-                expr=lyap_stage + lyap_infinite * options.beta / options.sampling_time
+                expr=m.infinite_block.phi_track[m.infinite_block.time.last()]
+                * options.beta / options.sampling_time
             )
 
         elif options.terminal_cost_riemann:
@@ -157,7 +123,7 @@ class InfiniteHorizonController(Controller):
                             for i, var_name in enumerate(m.infinite_block.stage_cost_index)
                         )
                         obj_infinite += tracking * (tau - tau_prev) / (
-                            options.gamma / options.sampling_time * (1 - tau ** 2)
+                            m.infinite_block.gamma / options.sampling_time * (1 - tau ** 2)
                         )
                         tau_prev = tau
 
@@ -200,30 +166,27 @@ class InfiniteHorizonController(Controller):
                                 )
                                 stage_cost += options.input_suppression_factor * mv_expr ** 2
 
-                if options.endpoint_constraints:
-                    terminal_cost = (
-                        m.infinite_block.phi[m.infinite_block.time.last()]
-                        * options.beta / options.sampling_time
-                    )
-                else:
-                    terminal_cost = (
-                        m.infinite_block.phi[
-                            m.infinite_block.time.prev(m.infinite_block.time.last())
-                        ]
-                        * options.beta / options.sampling_time
-                    )
+                terminal_cost = (
+                    m.infinite_block.phi[m.infinite_block.time.last()]
+                    * options.beta / options.sampling_time
+                )
 
                 return stage_cost + terminal_cost
+
+            m.lyapunov = pyo.Expression(
+                expr=m.infinite_block.phi_track[m.infinite_block.time.last()]
+                * options.beta / options.sampling_time
+            )
 
         m.objective = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
 
         self._model = m
 
-        print('Infinite Horizon Controller Initial Solve')
-        self.solve()
-
         with open("model_output.txt", "w") as f:
             m.pprint(ostream=f)
+
+        print('Infinite Horizon Controller Initial Solve')
+        self.solve()
 
 
 class FiniteHorizonController(Controller):
@@ -306,11 +269,11 @@ class FiniteHorizonController(Controller):
 
         self._model = m
 
-        print('Finite Horizon Controller Initial Solve')
-        self.solve()
-
         with open("model_output.txt", "w") as f:
             m.pprint(ostream=f)
+
+        print('Finite Horizon Controller Initial Solve')
+        self.solve()
 
 
 # ---------------------------------------------------------------------------

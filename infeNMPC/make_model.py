@@ -20,11 +20,23 @@ from pyomo.dae import ContinuousSet, DerivativeVar
 from pyomo.common.collections import ComponentMap
 from pyomo.core.expr.visitor import replace_expressions
 from pyomo.core.expr.visitor import identify_variables
-from .indexing_tools import (
+from pyomo.opt import TerminationCondition
+from .tools.indexing_tools import (
     _get_variable_key_for_data,
     _add_time_indexed_expression,
     _get_derivative_and_state_vars,
 )
+from .tools.collocation_tools import _compute_gamma_from_collocation
+
+
+def _check_optimal(results, label=""):
+    """Raise RuntimeError if the solver did not return an optimal solution."""
+    tc = results.solver.termination_condition
+    if tc != TerminationCondition.optimal:
+        suffix = f" ({label})" if label else ""
+        raise RuntimeError(
+            f"Solver terminated non-optimally{suffix}: {tc}"
+        )
 
 
 def _ipopt_solver():
@@ -116,7 +128,8 @@ def _solve_steady_state_model(m, target, options):
         m.objective = pyo.Objective(expr=sum(m.tracking_cost[:, 0]))
 
     solver = _ipopt_solver()
-    solver.solve(m, tee=options.tee_flag)
+    results = solver.solve(m, tee=options.tee_flag)
+    _check_optimal(results, "steady-state")
 
     m.ss_obj_value = pyo.value(m.objective)
 
@@ -309,6 +322,35 @@ def _finite_block_gen(m, options):
     m.deriv_vars = deriv_vars
     m.state_vars = state_vars
 
+    # phi_track for finite-horizon-only models (infinite horizon adds it on the
+    # infinite block instead; no time-compression transform is needed here)
+    if not options.infinite_horizon:
+        track_list_ft = list(m.CV_index) + list(m.MV_index)
+        c_raw_ft = options.stage_cost_weights or []
+        c_track_ft = (
+            c_raw_ft[:len(track_list_ft)]
+            if len(c_raw_ft) >= len(track_list_ft)
+            else [1.0] * len(track_list_ft)
+        )
+
+        m.phi_track = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
+        m.phi_track[0].fix(0)
+        m.dphidt_track = DerivativeVar(m.phi_track, wrt=m.time)
+
+        def _phi_track_finite_rule(m, t):
+            if t == 0:
+                return pyo.Constraint.Skip
+            tracking_cost = sum(
+                c_track_ft[i] * (
+                    _add_time_indexed_expression(m, var, t)
+                    - m.steady_state_values[var]
+                )**2
+                for i, var in enumerate(track_list_ft)
+            )
+            return m.dphidt_track[t] == tracking_cost
+
+        m.phi_track_ode = pyo.Constraint(m.time, rule=_phi_track_finite_rule)
+
     discretizer = pyo.TransformationFactory('dae.collocation')
     discretizer.apply_to(
         m, ncp=options.ncp_finite, nfe=options.nfe_finite,
@@ -321,6 +363,17 @@ def _finite_block_gen(m, options):
             )
 
     _model.equations_write(m)
+
+    if options.lyap_flag and not options.infinite_horizon:
+        m.V_prev = pyo.Param(mutable=True, initialize=1e10)
+        m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
+        t_last = m.time.last()
+        m.lyap_stability_constraint = pyo.Constraint(
+            expr=(
+                m.phi_track[t_last] - m.V_prev
+                <= (1 - options.lyap_epsilon) * m.first_stage_cost_prev
+            )
+        )
 
     return m
 
@@ -349,7 +402,8 @@ def _transform_model_derivatives(model, deriv_vars):
     for con in model.component_objects(pyo.Constraint, active=True, descend_into=True):
         if not con.is_indexed():
             continue
-        if con.name.endswith("_disc_eq") or con.name.endswith("terminal_cost"):
+        if (con.name.endswith("_disc_eq") or con.name.endswith("terminal_cost")
+                or con.name.endswith("phi_track_ode")):
             continue
 
         for index in list(con.keys()):
@@ -375,18 +429,19 @@ def _transform_model_derivatives(model, deriv_vars):
                 new_expr = replace_expressions(expr, substitution_map=replacement_map)
                 con[index].set_value(new_expr)
 
-    # If no endpoint constraint, remove all entries at t=1
-    if not model.endpoint_constraints:
-        for comp in model.component_objects(active=True, descend_into=True):
-            if not comp.is_indexed():
-                continue
-            for index in list(comp.keys()):
-                time_index = index[-1] if isinstance(index, tuple) else index
-                if time_index == 1:
-                    try:
-                        del comp[index]
-                    except (KeyError, AttributeError, TypeError):
-                        pass
+    # NOTE: t=1 cleanup disabled — phi_track[1] must always exist for the
+    # Lyapunov stability constraint and endpoint_state_constraints.
+    # if not model.endpoint_constraints:
+    #     for comp in model.component_objects(active=True, descend_into=True):
+    #         if not comp.is_indexed():
+    #             continue
+    #         for index in list(comp.keys()):
+    #             time_index = index[-1] if isinstance(index, tuple) else index
+    #             if time_index == 1:
+    #                 try:
+    #                     del comp[index]
+    #                 except (KeyError, AttributeError, TypeError):
+    #                     pass
 
 
 def _infinite_block_gen(m, options):
@@ -413,7 +468,21 @@ def _infinite_block_gen(m, options):
     m.time = ContinuousSet(bounds=(0, 1))
     m = _model.variables_initialize(m)
 
+    # --- Resolve gamma before building constraints that capture it ---
+    # If gamma is not provided, choose it so that the first collocation
+    # point tau_1 satisfies tau_1 = tanh(gamma * sampling_time), i.e.
+    # gamma = atanh(tau_1) / sampling_time.
+    if options.gamma is None:
+        gamma = _compute_gamma_from_collocation(
+            options.nfe_infinite, options.ncp_infinite, options.sampling_time
+        )
+        print(f"Auto-selected gamma = {gamma:.6g} "
+              f"(tau_1 = first collocation point, sampling_time = {options.sampling_time})")
+    else:
+        gamma = options.gamma
+
     def _add_dphidt(m):
+        # --- phi: primary terminal cost integral ---
         m.phi = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
         m.phi[0].fix(0)
         m.dphidt = DerivativeVar(m.phi, wrt=m.time)
@@ -423,73 +492,70 @@ def _infinite_block_gen(m, options):
         )
         c = options.stage_cost_weights
 
-        def _terminal_cost_rule(m, t):
-            stage_cost = sum(
-                c[i] * (
-                    _add_time_indexed_expression(m, var_name, t)
-                    - m.steady_state_values[var_name]
-                )**2
-                for i, var_name in enumerate(m.stage_cost_index)
-            )
-            if t == 1 and options.endpoint_constraints:
-                if any(c[i] == 0 for i in range(len(c))):
-                    cmod = [1 for _ in c]
-                    stage_cost_mod = sum(
-                        cmod[i] * (
-                            _add_time_indexed_expression(m, var_name, t)
-                            - m.steady_state_values[var_name]
-                        )**2
-                        for i, var_name in enumerate(m.stage_cost_index)
-                    )
-                    return stage_cost_mod <= 1e-6
-                else:
-                    return stage_cost <= 1e-6
-            elif t == 0:
-                return pyo.Constraint.Skip
-            else:
+        if options.custom_objective:
+            custom_objective = _model.custom_objective
+            cost_fn = custom_objective(m, options)
+
+            def _custom_terminal_cost_rule(m, t):
+                if t == 0 or t == 1:
+                    return pyo.Constraint.Skip
                 return (
-                    (options.gamma / options.sampling_time * (1 - t**2))
+                    (gamma / options.sampling_time * (1 - t**2))
+                    * m.dphidt[t] == cost_fn(m, t) - m.ss_obj_value
+                )
+
+            m.terminal_cost = pyo.Constraint(m.time, rule=_custom_terminal_cost_rule)
+
+        else:
+            def _terminal_cost_rule(m, t):
+                if t == 0 or t == 1:
+                    return pyo.Constraint.Skip
+                stage_cost = sum(
+                    c[i] * (
+                        _add_time_indexed_expression(m, var_name, t)
+                        - m.steady_state_values[var_name]
+                    )**2
+                    for i, var_name in enumerate(m.stage_cost_index)
+                )
+                return (
+                    (gamma / options.sampling_time * (1 - t**2))
                     * m.dphidt[t] == stage_cost
                 )
 
-        def _custom_terminal_cost_rule(m, t):
-            setpoint_stage_cost = sum(
-                c[i] * (
-                    _add_time_indexed_expression(m, var_name, t)
-                    - m.steady_state_values[var_name]
-                )**2
-                for i, var_name in enumerate(m.stage_cost_index)
-            )
-            # custom_objective is bound via closure from the if-block below
-            cost_fn = custom_objective(m, options)
-            if t == 1:
-                if options.endpoint_constraints:
-                    return setpoint_stage_cost <= 1e-6
-                else:
-                    return pyo.Constraint.Skip
-            elif t == 0:
-                return pyo.Constraint.Skip
-            else:
-                stage_cost_expr = cost_fn(m, t)
-                return (
-                    (options.gamma / options.sampling_time * (1 - t**2))
-                    * m.dphidt[t] == stage_cost_expr - m.ss_obj_value
-                )
-
-        if options.custom_objective:
-            custom_objective = _model.custom_objective
-            m.terminal_cost = pyo.Constraint(
-                m.time, rule=_custom_terminal_cost_rule
-            )
-        else:
             m.terminal_cost = pyo.Constraint(m.time, rule=_terminal_cost_rule)
+
+        # --- phi_track: quadratic tracking Lyapunov integral over CVs and MVs ---
+        track_list = list(m.CV_index) + list(m.MV_index)
+        c_raw = options.stage_cost_weights or []
+        c_track = c_raw[:len(track_list)] if len(c_raw) >= len(track_list) else [1.0] * len(track_list)
+
+        m.phi_track = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
+        m.phi_track[0].fix(0)
+        m.dphidt_track = DerivativeVar(m.phi_track, wrt=m.time)
+
+        def _phi_track_rule(m, t):
+            if t == 0 or t == 1:
+                return pyo.Constraint.Skip
+            tracking_cost = sum(
+                c_track[i] * (
+                    _add_time_indexed_expression(m, var, t)
+                    - m.steady_state_values[var]
+                )**2
+                for i, var in enumerate(track_list)
+            )
+            return (
+                (gamma / options.sampling_time * (1 - t**2))
+                * m.dphidt_track[t] == tracking_cost
+            )
+
+        m.phi_track_ode = pyo.Constraint(m.time, rule=_phi_track_rule)
 
         return m
 
     deriv_vars, state_vars = _get_derivative_and_state_vars(m)
     m = _add_dphidt(m)
 
-    m.gamma = options.gamma
+    m.gamma = gamma
     m.sampling_time = options.sampling_time
 
     deriv_vars, state_vars = _get_derivative_and_state_vars(m)
@@ -505,6 +571,32 @@ def _infinite_block_gen(m, options):
     _model.equations_write(m)
 
     m.endpoint_constraints = options.endpoint_constraints
+
+    # --- Endpoint state equality constraints (one per CV, replaces aggregate) ---
+    if options.endpoint_constraints:
+        cv_list_ep = list(m.CV_index)
+
+        def _endpoint_state_rule(m, cv):
+            return (
+                _add_time_indexed_expression(m, cv, 1) == m.steady_state_values[cv]
+            )
+
+        m.endpoint_state_constraints = pyo.Constraint(
+            cv_list_ep, rule=_endpoint_state_rule
+        )
+
+    # --- Lyapunov stability constraint ---
+    if options.lyap_flag:
+        m.V_prev = pyo.Param(mutable=True, initialize=1e10)
+        m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
+        tau_last = m.time.last()
+        m.lyap_stability_constraint = pyo.Constraint(
+            expr=(
+                m.phi_track[tau_last] - m.V_prev
+                <= (1 - options.lyap_epsilon) * m.first_stage_cost_prev
+            )
+        )
+
     _transform_model_derivatives(m, deriv_vars)
 
     return m
@@ -562,9 +654,5 @@ if __name__ == '__main__':
 
     print('\nTesting Finite Horizon Model Setup')
     m = _make_finite_horizon_model(m, options)
-
-    if True:
-        with open("model_output.txt", "w") as f:
-            m.pprint(ostream=f)
 
     assert isinstance(m, pyo.ConcreteModel)
