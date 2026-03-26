@@ -43,7 +43,6 @@ options = Options.for_model_module(
     custom_objective=True,
     # ---- Cost function ----
     stage_cost_weights=[1, 1, 1 / 600],
-    gamma=0.001,
     beta=1,
     # ---- Output ----
     tee_flag=False,

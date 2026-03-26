@@ -42,7 +42,6 @@ options = Options.for_model_module(
     input_suppression_factor=0.5e5,
     # ---- Cost function ----
     stage_cost_weights=[1e5, 1e3, 1e2, 1e2],
-    gamma=0.05,
     beta=1.2,
     # ---- Output ----
     tee_flag=False,
