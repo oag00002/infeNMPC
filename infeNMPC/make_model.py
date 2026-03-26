@@ -325,12 +325,12 @@ def _finite_block_gen(m, options):
     # phi_track for finite-horizon-only models (infinite horizon adds it on the
     # infinite block instead; no time-compression transform is needed here)
     if not options.infinite_horizon:
-        cv_list_ft = list(m.CV_index)
+        track_list_ft = list(m.CV_index) + list(m.MV_index)
         c_raw_ft = options.stage_cost_weights or []
-        c_cv_ft = (
-            c_raw_ft[:len(cv_list_ft)]
-            if len(c_raw_ft) >= len(cv_list_ft)
-            else [1.0] * len(cv_list_ft)
+        c_track_ft = (
+            c_raw_ft[:len(track_list_ft)]
+            if len(c_raw_ft) >= len(track_list_ft)
+            else [1.0] * len(track_list_ft)
         )
 
         m.phi_track = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
@@ -341,11 +341,11 @@ def _finite_block_gen(m, options):
             if t == 0:
                 return pyo.Constraint.Skip
             tracking_cost = sum(
-                c_cv_ft[i] * (
-                    _add_time_indexed_expression(m, cv, t)
-                    - m.steady_state_values[cv]
+                c_track_ft[i] * (
+                    _add_time_indexed_expression(m, var, t)
+                    - m.steady_state_values[var]
                 )**2
-                for i, cv in enumerate(cv_list_ft)
+                for i, var in enumerate(track_list_ft)
             )
             return m.dphidt_track[t] == tracking_cost
 
@@ -524,11 +524,10 @@ def _infinite_block_gen(m, options):
 
             m.terminal_cost = pyo.Constraint(m.time, rule=_terminal_cost_rule)
 
-        # --- phi_track: CV-only quadratic tracking Lyapunov integral (always) ---
-        cv_list = list(m.CV_index)
-        n_cv = len(cv_list)
+        # --- phi_track: quadratic tracking Lyapunov integral over CVs and MVs ---
+        track_list = list(m.CV_index) + list(m.MV_index)
         c_raw = options.stage_cost_weights or []
-        c_cv = c_raw[:n_cv] if len(c_raw) >= n_cv else [1.0] * n_cv
+        c_track = c_raw[:len(track_list)] if len(c_raw) >= len(track_list) else [1.0] * len(track_list)
 
         m.phi_track = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
         m.phi_track[0].fix(0)
@@ -538,11 +537,11 @@ def _infinite_block_gen(m, options):
             if t == 0 or t == 1:
                 return pyo.Constraint.Skip
             tracking_cost = sum(
-                c_cv[i] * (
-                    _add_time_indexed_expression(m, cv, t)
-                    - m.steady_state_values[cv]
+                c_track[i] * (
+                    _add_time_indexed_expression(m, var, t)
+                    - m.steady_state_values[var]
                 )**2
-                for i, cv in enumerate(cv_list)
+                for i, var in enumerate(track_list)
             )
             return (
                 (gamma / options.sampling_time * (1 - t**2))

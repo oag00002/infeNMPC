@@ -131,19 +131,19 @@ def mpc_loop(options: Options):
                 lyap_block = controller
                 stage_block = controller
             V_current = pyo.value(lyap_block.phi_track[lyap_block.time.last()])
-            cv_list = list(stage_block.CV_index)
+            track_list = list(stage_block.CV_index) + list(stage_block.MV_index)
             c_raw = options.stage_cost_weights or []
-            c_cv = c_raw[:len(cv_list)] if len(c_raw) >= len(cv_list) else [1.0] * len(cv_list)
+            c_track = c_raw[:len(track_list)] if len(c_raw) >= len(track_list) else [1.0] * len(track_list)
             t_first_fe = next(
                 t for t in stage_block.time.get_finite_elements()
                 if t > stage_block.time.first()
             )
             first_stage_cost = sum(
-                c_cv[j] * (
-                    pyo.value(_add_time_indexed_expression(stage_block, cv, t_first_fe))
-                    - stage_block.steady_state_values[cv]
+                c_track[j] * (
+                    pyo.value(_add_time_indexed_expression(stage_block, var, t_first_fe))
+                    - stage_block.steady_state_values[var]
                 ) ** 2
-                for j, cv in enumerate(cv_list)
+                for j, var in enumerate(track_list)
             )
             lyap_block.V_prev.set_value(V_current)
             lyap_block.first_stage_cost_prev.set_value(first_stage_cost)
