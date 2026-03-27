@@ -33,7 +33,7 @@ options = Options.for_model_module(
     nfe_finite=2,
     ncp_finite=3,
     # ---- Infinite-horizon discretization ----
-    infinite_horizon=True,
+    infinite_horizon=False,
     nfe_infinite=3,
     ncp_infinite=3,
     # ---- Controller settings ----
@@ -47,7 +47,6 @@ options = Options.for_model_module(
     # ---- Cost function ----
     # Weights order: [xD1A, xD2B, xC, VB1, LT1, D1, B1, VB2, LT2, D2, B2]
     stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-    gamma=0.05,
     beta=1.0,
     # ---- Output ----
     tee_flag=True,
