@@ -43,6 +43,7 @@ def variables_initialize(m):
     m.MV_display_names = ["VB_1", "LT_1", "D_1", "B_1", "VB_2", "LT_2", "D_2", "B_2"]
     m.CV_index = pyo.Set(initialize=["xD1A", "xD2B", "xC"])
     m.CV_display_names = ["x_{D1,A}", "x_{D2,B}", "x_{B2,C}"]
+    m.slack_index = pyo.Set(initialize=["xD1A_eps", "xD2B_eps", "xC_eps", "M1_eps", "M2_eps"])
 
     # ---- System Parameters ----
     m.NT = pyo.Param(initialize=41)   # Number of trays
@@ -79,14 +80,8 @@ def variables_initialize(m):
         else:
             return 0.4 + (0.6 - 0.4) / (41 - 21 - 1) * (k - 21 - 1)
 
-    def _M1_bounds(m, k, t):
-        if k == 1:
-            return (0.5, 2.0)
-        else:
-            return (0.25, 0.75)
-
     m.x1 = pyo.Var(m.tray, m.comp, m.time, initialize=_x1_init, bounds=(0, 1))
-    m.M1 = pyo.Var(m.tray, m.time, initialize=_M1_init, bounds=_M1_bounds)
+    m.M1 = pyo.Var(m.tray, m.time, initialize=_M1_init, bounds=(0, 3.0))
     m.x1dot = DerivativeVar(m.x1, initialize=0.0)
     m.M1dot = DerivativeVar(m.M1, initialize=0.0)
 
@@ -105,14 +100,8 @@ def variables_initialize(m):
         else:
             return 0.4 + (0.6 - 0.4) / (41 - 21 - 1) * (k - 21 - 1)
 
-    def _M2_bounds(m, k, t):
-        if k == 1:
-            return (0.5, 2.0)
-        else:
-            return (0.25, 0.75)
-
     m.x2 = pyo.Var(m.tray, m.comp, m.time, initialize=_x2_init, bounds=(0, 1))
-    m.M2 = pyo.Var(m.tray, m.time, initialize=_M2_init, bounds=_M2_bounds)
+    m.M2 = pyo.Var(m.tray, m.time, initialize=_M2_init, bounds=(0, 3.0))
     m.x2dot = DerivativeVar(m.x2, initialize=0.0)
     m.M2dot = DerivativeVar(m.M2, initialize=0.0)
 
@@ -138,6 +127,15 @@ def variables_initialize(m):
     m.xD1A = pyo.Var(m.time, initialize=0.9, bounds=(0, 1))  # A purity in Col 1 distillate
     m.xD2B = pyo.Var(m.time, initialize=0.9, bounds=(0, 1))  # B purity in Col 2 distillate
     m.xC = pyo.Var(m.time, initialize=0.9, bounds=(0, 1))    # C purity in Col 2 bottoms
+
+    # ---- Slack Variables (soft constraints, ncp=1 via slack_index) ----
+    # CV purity lower bound slacks (one per time point, piecewise-constant)
+    m.xD1A_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+    m.xD2B_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+    m.xC_eps   = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+    # Holdup bound slacks
+    m.M1_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
+    m.M2_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
 
     # ---- Setpoints for CVs ----
     m.setpoints = pyo.Param(m.CV_index, initialize={
@@ -401,30 +399,75 @@ def equations_write(m):
 
     m.x2dot_balance = pyo.Constraint(m.tray, m.comp, m.time, rule=x2dot_rule)
 
+    # ========================================================================
+    # SOFT CONSTRAINTS (slack variables)
+    # ========================================================================
+
+    # CV purity lower bounds (soft) — mirrors AMPL const45/46/47
+    m.xD1A_lb = pyo.Constraint(
+        m.time, rule=lambda m, t: m.xD1A[t] >= m.setpoints['xD1A'] - m.xD1A_eps[t]
+    )
+    m.xD2B_lb = pyo.Constraint(
+        m.time, rule=lambda m, t: m.xD2B[t] >= m.setpoints['xD2B'] - m.xD2B_eps[t]
+    )
+    m.xC_lb = pyo.Constraint(
+        m.time, rule=lambda m, t: m.xC[t] >= m.setpoints['xC'] - m.xC_eps[t]
+    )
+
+    # Holdup lower bounds (soft) — mirrors AMPL M1lower/M2lower
+    def M1_lower_rule(m, k, t):
+        lb = 0.5 if k == 1 else 0.25
+        return m.M1[k, t] >= lb - m.M1_eps[k, t]
+
+    def M1_upper_rule(m, k, t):
+        ub = 2.0 if k == 1 else 0.75
+        return m.M1[k, t] <= ub + m.M1_eps[k, t]
+
+    def M2_lower_rule(m, k, t):
+        lb = 0.5 if k == 1 else 0.25
+        return m.M2[k, t] >= lb - m.M2_eps[k, t]
+
+    def M2_upper_rule(m, k, t):
+        ub = 2.0 if k == 1 else 0.75
+        return m.M2[k, t] <= ub + m.M2_eps[k, t]
+
+    m.M1_lower = pyo.Constraint(m.tray, m.time, rule=M1_lower_rule)
+    m.M1_upper = pyo.Constraint(m.tray, m.time, rule=M1_upper_rule)
+    m.M2_lower = pyo.Constraint(m.tray, m.time, rule=M2_lower_rule)
+    m.M2_upper = pyo.Constraint(m.tray, m.time, rule=M2_upper_rule)
+
     return m
 
 
 def custom_objective(m, options):
     """
-    Economic stage cost for ternary distillation.
+    Economic stage cost for ternary distillation with slack penalties.
 
-    Minimizes: feed cost + energy cost - product revenue
-        cost = pF*F + pV*(VB1+VB2) - pA*D1 - pB*D2 - pC*B2
+    Objective = economic cost + L1 penalty on soft constraint violations
+        econ    = pF*F + pV*(VB1+VB2) - pA*D1 - pB*D2 - pC*B2
+        penalty = rho * (CV purity slacks + holdup bound slacks)
     """
-    pF = 1.0   # Feed price
-    pV = 1.0   # Energy price (per unit of boilup)
-    pA = 1.0   # Light component A product price
-    pB = 2.0   # Medium component B product price (higher value)
-    pC = 1.0   # Heavy component C product price
+    pF  = 1.0    # Feed price
+    pV  = 1.0    # Energy price (per unit of boilup)
+    pA  = 1.0    # Light component A product price
+    pB  = 2.0    # Medium component B product price (higher value)
+    pC  = 1.0    # Heavy component C product price
+    rho = 1.0e4  # Slack penalty weight (matches AMPL rho)
 
     def stage_cost(m, t):
-        return (
+        econ = (
             pF * m.F +
             pV * (m.VB1[t] + m.VB2[t]) -
             pA * m.D1[t] -
             pB * m.D2[t] -
             pC * m.B2[t]
         )
+        cv_penalty = rho * (m.xD1A_eps[t] + m.xD2B_eps[t] + m.xC_eps[t])
+        M_penalty = rho * (
+            sum(m.M1_eps[k, t] for k in m.tray) +
+            sum(m.M2_eps[k, t] for k in m.tray)
+        )
+        return econ + cv_penalty + M_penalty
 
     return stage_cost
 

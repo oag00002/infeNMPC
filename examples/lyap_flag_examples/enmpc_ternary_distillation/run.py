@@ -1,5 +1,5 @@
 """
-Run script for the eNMPC ternary distillation two-column example.
+Run script for the eNMPC ternary distillation two-column example (Lyapunov stability).
 
 System:   Two distillation columns in series separating A, B, C
 States:   x1[tray,comp], M1[tray] (Col 1); x2[tray,comp], M2[tray] (Col 2) — 246 total
@@ -30,7 +30,7 @@ options = Options.for_model_module(
     num_horizons=10,
     sampling_time=1,
     # ---- Finite-horizon discretization ----
-    nfe_finite=25,
+    nfe_finite=2,
     ncp_finite=3,
     # ---- Infinite-horizon discretization ----
     infinite_horizon=False,
@@ -42,7 +42,7 @@ options = Options.for_model_module(
     terminal_cost_riemann=False,
     initialize_with_initial_data=False,
     initialization_assist=False,
-    input_suppression=False,
+    input_suppression=True,
     input_suppression_factor=1.0e3,
     # ---- Cost function ----
     # Weights order: [xD1A, xD2B, xC, VB1, LT1, D1, B1, VB2, LT2, D2, B2]
@@ -58,7 +58,7 @@ options = Options.for_model_module(
     disturb_seeded=True,
     # ---- Lyapunov stability constraint ----
     lyap_flag=True,
-    lyap_epsilon=0.01,
+    lyap_delta=0.01,
 )
 
 if __name__ == '__main__':

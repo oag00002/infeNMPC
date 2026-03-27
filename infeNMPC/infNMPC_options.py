@@ -117,7 +117,7 @@ class Options:
 
     # Lyapunov stability constraint
     lyap_flag: bool = False
-    lyap_epsilon: float = 0.01
+    lyap_delta: float = 0.01
 
     # Display / data-output options
     safe_run: bool = False

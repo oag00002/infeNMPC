@@ -50,7 +50,7 @@ options = Options.for_model_module(
     save_figure=True,
     # ---- Lyapunov stability constraint ----
     lyap_flag=True,
-    lyap_epsilon=0.99,
+    lyap_delta=0.01,
 )
 
 if __name__ == '__main__':

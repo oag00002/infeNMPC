@@ -87,7 +87,7 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `gamma` | `None` | Time-compression param; **auto-computed if None** |
 | `beta` | `1.0` | Weight on terminal cost vs. stage cost |
 | `lyap_flag` | `False` | Add Lyapunov stability constraint |
-| `lyap_epsilon` | `0.01` | Constraint tightness (0=tight, 1=loose) |
+| `lyap_delta` | `0.01` | Required fractional decrease per step (0=inactive, 1=tight) |
 | `input_suppression` | `False` | Penalize MV increments |
 | `input_suppression_factor` | `1.0` | Weight on move-suppression penalty |
 | `initialize_with_initial_data` | `False` | Spread IC across all time points |
@@ -351,7 +351,7 @@ lyap_block.V_prev.set_value(V_current)
 lyap_block.first_stage_cost_prev.set_value(first_stage_cost)
 ```
 
-`lyap_epsilon = 0.99` is a loose constraint (only 1% decrease required per iteration). `lyap_epsilon = 0.01` is tight (99% decrease required).
+`lyap_delta = 0.01` is a loose constraint (1% decrease required per iteration). `lyap_delta = 0.99` is tight (99% decrease required per iteration). Constraint form: `V_k - V_{k-1} ≤ -δ * L_{k-1}`.
 
 ---
 

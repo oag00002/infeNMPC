@@ -377,7 +377,7 @@ def _finite_block_gen(m, options):
         m.lyap_stability_constraint = pyo.Constraint(
             expr=(
                 m.phi_track[t_last] - m.V_prev
-                <= (1 - options.lyap_epsilon) * m.first_stage_cost_prev
+                <= -options.lyap_delta * m.first_stage_cost_prev
             )
         )
 
@@ -599,7 +599,7 @@ def _infinite_block_gen(m, options):
         m.lyap_stability_constraint = pyo.Constraint(
             expr=(
                 m.phi_track[tau_last] - m.V_prev
-                <= (1 - options.lyap_epsilon) * m.first_stage_cost_prev
+                <= -options.lyap_delta * m.first_stage_cost_prev
             )
         )
 
