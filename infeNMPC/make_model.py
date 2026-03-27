@@ -361,6 +361,12 @@ def _finite_block_gen(m, options):
             m = discretizer.reduce_collocation_points(
                 m, var=getattr(m, mv), ncp=1, contset=m.time
             )
+        if hasattr(m, 'slack_index'):
+            for sv in m.slack_index:
+                if hasattr(m, sv):
+                    m = discretizer.reduce_collocation_points(
+                        m, var=getattr(m, sv), ncp=1, contset=m.time
+                    )
 
     _model.equations_write(m)
 
