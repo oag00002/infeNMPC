@@ -29,6 +29,86 @@ from .tools.indexing_tools import (
 from .tools.collocation_tools import _compute_gamma_from_collocation
 
 
+def _fix_initial_conditions_at_t0(block):
+    """
+    Fix initial conditions at t=0 for differential state vars and algebraic CVs.
+
+    For models where CVs are algebraic variables (no DerivativeVar), simply
+    fixing all state vars at t=0 and separately loading initial_data creates
+    contradictions through the defining equality constraints.  For example, if
+    ``xD1A_def: xD1A[t] == x1[41,1,t]`` holds and we fix both ``xD1A[0]=0.90``
+    and ``x1[41,1,0]=0.95`` (steady-state), the constraint is violated.
+
+    This function handles the two cases correctly:
+
+    **Differential CVs** (CV is in state_vars, e.g. CSTR Ca/Cb):
+      Nothing special — state vars at t=0 are fixed to their current values,
+      which have already been loaded from initial_data by the caller.
+
+    **Algebraic CVs** (CV not in state_vars, e.g. distillation xD1A):
+      1. Fix ``cv[t0]`` to the value already loaded from initial_data.
+      2. Scan equality constraints at t=0 to find state vars that are now
+         *determined* through those fixed algebraic CVs (e.g. x1[41,1,0] via
+         xD1A_def).  Those state vars are left free — their t=0 value is set
+         implicitly by the constraint rather than by a direct fix.
+      3. Fix all remaining state vars at t=0 to their current values (which
+         come from the model's ``initialize=...`` functions — the intended
+         physical initial conditions for variables not covered by initial_values).
+
+    Parameters
+    ----------
+    block : pyo.ConcreteModel or pyo.Block
+        Must have ``.time``, ``.CV_index``, and ``.state_vars`` (set of Var
+        components).  Must have been discretised before this is called.
+    """
+    t0 = block.time.first()
+    state_var_components = block.state_vars  # set of Var components
+
+    # Identify algebraic CVs: in CV_index but NOT a differential state variable
+    algebraic_cv_names = [
+        cv for cv in block.CV_index
+        if getattr(block, cv) not in state_var_components
+    ]
+
+    # Fix algebraic CVs at t0 to the values loaded from initial_data
+    algebraic_ids_at_t0 = set()
+    for cv_name in algebraic_cv_names:
+        cv_var = getattr(block, cv_name)
+        if t0 in cv_var:
+            cv_var[t0].fix()
+            algebraic_ids_at_t0.add(id(cv_var[t0]))
+
+    # Scan equality constraints at t0 to find state vars whose t=0 value is
+    # already determined through the fixed algebraic CVs.  Those must not also
+    # be independently fixed (which would over-constrain the system).
+    state_vars_to_skip = set()
+    if algebraic_ids_at_t0:
+        for con in block.component_objects(pyo.Constraint, active=True):
+            for idx in list(con.keys()):
+                time_val = idx[-1] if isinstance(idx, tuple) else idx
+                if time_val != t0:
+                    continue
+                expr = con[idx].expr
+                if expr is None:
+                    continue
+                all_vars = list(identify_variables(expr, include_fixed=True))
+                # Only act on constraints that involve a fixed algebraic CV at t0
+                if not any(id(v) in algebraic_ids_at_t0 for v in all_vars):
+                    continue
+                # Free state vars in this constraint are determined by it
+                for v in all_vars:
+                    if (not v.is_fixed()
+                            and v.parent_component() in state_var_components):
+                        state_vars_to_skip.add(id(v))
+
+    # Fix remaining state vars at t0 (those not determined by algebraic CVs)
+    for var in state_var_components:
+        for index in var:
+            time_val = index[-1] if isinstance(index, tuple) else index
+            if time_val == t0 and id(var[index]) not in state_vars_to_skip:
+                var[index].fix()
+
+
 def _check_optimal(results, label=""):
     """Raise RuntimeError if the solver did not return an optimal solution."""
     tc = results.solver.termination_condition
@@ -234,11 +314,7 @@ def _make_infinite_horizon_model(m, options):
     else:
         m.interface.load_data(initial_data, time_points=0)
 
-    time0 = m.finite_block.time.first()
-    for var in m.finite_block.state_vars:
-        for index in var:
-            if (isinstance(index, tuple) and index[-1] == time0) or index == time0:
-                var[index].fix()
+    _fix_initial_conditions_at_t0(m.finite_block)
 
     return m
 
@@ -297,30 +373,24 @@ def _make_finite_horizon_model(m, options):
 
     m.interface = DynamicModelInterface(m, m.time, clean_model=True)
 
-    # Load the steady-state solution at every time point as a warm-start.
-    # This gives all state variables (e.g. tray compositions, holdups) and MVs
-    # physically consistent values before anything is fixed.  Without this, models
-    # whose `initial_values` are indexed by CV_index only (and whose CVs are
-    # algebraic rather than differential state variables) leave state variables at
-    # rough `initialize=...` guesses that can be inconsistent with the MV
-    # initialization values, making the plant's initial solve infeasible.
-    # The subsequent `initial_data` load then overrides whichever variables
-    # `initial_values` covers (e.g. Ca/Cb for the CSTR), so existing behaviour
-    # for models where the state IS fully specified by `initial_values` is unchanged.
+    # Warm-start at t > t0 with steady-state values.
+    # Skipping t=0 preserves the Pyomo initialize=... values there, which are
+    # the model's intended initial conditions for state variables not covered by
+    # initial_values (e.g. tray compositions / holdups in distillation models).
+    # Interior and final time points still receive a physically consistent
+    # steady-state warm-start, which is important for convergence on large models.
+    t_first = m.time.first()
     for t in m.time:
-        m.interface.load_data(steady_state_data, time_points=t)
+        if t != t_first:
+            m.interface.load_data(steady_state_data, time_points=t)
 
     if options.initialize_with_initial_data:
         for time in m.time:
             m.interface.load_data(initial_data, time_points=time)
     else:
-        m.interface.load_data(initial_data, time_points=0)
+        m.interface.load_data(initial_data, time_points=t_first)
 
-    time0 = m.time.first()
-    for var in m.state_vars:
-        for index in var:
-            if (isinstance(index, tuple) and index[-1] == time0) or index == time0:
-                var[index].fix()
+    _fix_initial_conditions_at_t0(m)
 
     return m
 

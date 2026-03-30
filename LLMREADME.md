@@ -157,6 +157,18 @@ def default_options():
     """
 ```
 
+### Algebraic CV Initial Conditions
+
+When a CV is an algebraic variable (no DerivativeVar), the framework uses `_fix_initial_conditions_at_t0` to set its IC correctly:
+
+1. **Fix the algebraic CV at t=0** to the value loaded from `initial_data`.
+2. **Constraint analysis**: scan equality constraints at `t=0` to find any state variables that are *algebraically determined* through the fixed CV (e.g. `xD1A_def: xD1A[0] == x1[41,1,0]`). Those state vars are left free — they are pinned implicitly through the constraint.
+3. **Fix remaining state vars at t=0** to their `initialize=...` values (the model's intended physical ICs for variables not covered by `initial_values`).
+
+The steady-state warm-start in `_make_finite_horizon_model` skips `t=0` so that `initialize=...` values are preserved there for non-CV state vars.
+
+The infinite-horizon `endpoint_state_constraints` already handles algebraic CVs generically (`CV[τ=1] == setpoint` for all CVs in `CV_index`, regardless of type).
+
 ### Important: `m.time` is injected by the framework
 
 `variables_initialize` is called with `m.time` already set as a `ContinuousSet`. The user must NOT declare `m.time` in their model. The framework sets:
