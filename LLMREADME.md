@@ -230,7 +230,9 @@ This is the most complex file. It builds Pyomo models in stages.
 - Time: `[0, nfe_finite * sampling_time]`
 - Collocation: `LAGRANGE-RADAU` with `clean_model='delete'`
 - If `ncp_finite > 1`: MVs are reduced to 1 collocation point (piecewise-constant)
-- If finite-horizon-only (not infinite): adds `phi_track` ODE and Lyapunov constraint
+- If `lyap_flag`: adds `phi_track` as a scalar `pyo.Expression` = sum of quadratic tracking costs at each FE right-endpoint (RADAU collocation points), skipping `t=0`. This is the Riemann-sum contribution of the finite block to the total Lyapunov measure.
+  - For finite-only: also adds `V_prev`, `first_stage_cost_prev`, and `lyap_stability_constraint` on the block.
+  - For infinite-horizon: the Lyapunov constraint is placed on the parent `ConcreteModel` by `_make_infinite_horizon_model` (see below).
 - `m.state_vars`, `m.deriv_vars` are stored on the block
 
 ### Infinite-Horizon Block (`_infinite_block_gen`)
@@ -242,10 +244,20 @@ This is the most complex file. It builds Pyomo models in stages.
   - `phi`: primary terminal cost integral (ODE `dphidt`)
   - `phi[0].fix(0)`; `terminal_cost` constraint defines the ODE dynamics
   - `phi_track`: quadratic tracking Lyapunov integral (ODE `dphidt_track`)
-  - `phi_track[0].fix(0)`; `phi_track_ode` defines its dynamics
+  - `phi_track[0].fix(0)`; `phi_track_ode` defines its dynamics (starts at 0, independent of finite block)
   - `endpoint_state_constraints`: if `endpoint_constraints=True`, `CV[τ=1] == setpoint`
-  - `lyap_stability_constraint`: if `lyap_flag=True`
 - **Derivative transformation** (`_transform_model_derivatives`): Replaces all `dxdt[t]` in user constraints with `(gamma/sampling_time * (1 - t²)) * dxdt[t]`. Skips `*_disc_eq`, `terminal_cost`, and `phi_track_ode` constraints.
+
+### Infinite-Horizon Lyapunov Constraint (top-level model, set in `_make_infinite_horizon_model`)
+
+When `lyap_flag=True` and `infinite_horizon=True`, the combined Lyapunov stability constraint is placed on the parent `ConcreteModel` (not on either block):
+```python
+m.lyap_stability_constraint:
+    finite_block.phi_track + infinite_block.phi_track[τ=1] - V_prev
+    <= -lyap_delta * first_stage_cost_prev
+```
+`V_prev` and `first_stage_cost_prev` live on the top-level model `m`.
+`finite_block.phi_track` is the Riemann-sum Expression; `infinite_block.phi_track[τ=1]` is the ODE integral.
 
 ### Time Transformation (key math)
 
@@ -332,21 +344,32 @@ Variable keys have the form `"Ca[*]"` (scalar-in-time) or `"x[1,*]"` (spatially 
 
 ## Lyapunov Stability (`lyap_flag=True`)
 
-When `lyap_flag=True`, the infinite block (or finite block if finite-only) gains:
-
+**Finite-horizon only** (`infinite_horizon=False`): `V_prev`, `first_stage_cost_prev`, and `lyap_stability_constraint` live on the finite block (= `controller._model`):
 ```python
-m.V_prev = pyo.Param(mutable=True, initialize=1e10)
-m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
 m.lyap_stability_constraint:
-    phi_track[last_time] - V_prev <= (1 - lyap_epsilon) * first_stage_cost_prev
+    phi_track - V_prev <= -lyap_delta * first_stage_cost_prev
 ```
+where `phi_track` is a scalar `pyo.Expression` = Riemann sum of quadratic tracking costs at FE endpoints.
 
-`phi_track` is always the quadratic tracking integral (regardless of `custom_objective`), integrating `Σ c[i] * (var[i] - setpoint[i])²` over the domain.
+**Infinite-horizon** (`infinite_horizon=True`): `V_prev`, `first_stage_cost_prev`, and `lyap_stability_constraint` live on the top-level `ConcreteModel` (= `controller._model`):
+```python
+m.lyap_stability_constraint:
+    finite_block.phi_track + infinite_block.phi_track[τ=1] - V_prev
+    <= -lyap_delta * first_stage_cost_prev
+```
+The total Lyapunov measure combines the Riemann sum over the finite block and the ODE integral over the infinite block.
+
+`phi_track` (the quadratic tracking measure) always uses `Σ c[i] * (var[i] - setpoint[i])²` with `stage_cost_weights` — independent of `custom_objective`.
 
 At each MPC iteration (in `run_MPC.py`):
 ```python
-V_current = pyo.value(lyap_block.phi_track[lyap_block.time.last()])
-first_stage_cost = Σ c[j] * (var[j][t_first_fe] - setpoint[j])²   # at first FE endpoint
+# lyap_block = controller (proxies to controller._model) in both cases
+if infinite_horizon:
+    V_current = pyo.value(controller.finite_block.phi_track) \
+              + pyo.value(controller.infinite_block.phi_track[tau_last])
+else:
+    V_current = pyo.value(controller.phi_track)
+first_stage_cost = Σ c[j] * (var[j][t_first_fe] - setpoint[j])²  # at first FE endpoint
 lyap_block.V_prev.set_value(V_current)
 lyap_block.first_stage_cost_prev.set_value(first_stage_cost)
 ```
@@ -357,20 +380,31 @@ lyap_block.first_stage_cost_prev.set_value(first_stage_cost)
 
 ## Results Output (`data_save_and_plot.py`)
 
-Results are saved to a hierarchical folder:
+Results are saved to a timestamped folder created once at the start of `mpc_loop`:
 ```
 Results/
-  infinite_horizon_true/
-    finite_horizon_{nfe_finite}/
-      gamma_{gamma}/
-        beta_{beta}/
-          disturbance_false/
-            io_data.csv     ← CV and MV trajectories (Time, Ca, Cb, Fa0, ...)
-            sim_data.csv    ← full DAE trajectory from plant
-            CV_Ca.png, CV_Cb.png, MV_Fa0.png  ← trajectory plots
+  {model_name}/
+    {YYYY-MM-DD}/
+      {HH-MM-SS}/
+        run_config.txt  ← all Options fields + resolved gamma + git branch
+        io_data.csv     ← CV and MV trajectories (Time, Ca, Cb, Fa0, ...)
+        sim_data.csv    ← full DAE trajectory from plant
+        CV_1_Ca.png, CV_2_Cb.png, MV_1_Fa0.png  ← trajectory plots
 ```
 
-For `safe_run=True`, `io_data.csv` is overwritten after every iteration (enables live monitoring).
+`model_name` comes from `options.model_name` (set to the module's `__name__` last component by `Options.for_model_module`). Special characters are replaced with `_`.
+
+`run_config.txt` is written immediately when the folder is created (before the loop starts). The `gamma` field shows the resolved value even when `options.gamma=None` (auto-computed).
+
+For `safe_run=True`, `io_data.csv` is overwritten after every iteration into the same timestamped folder.
+
+### Key functions
+
+| Function | Purpose |
+|---|---|
+| `_create_run_folder(options, resolved_gamma)` | Create `Results/model/date/time/`, write `run_config.txt`, return path |
+| `_handle_mpc_results(..., folder_path)` | Save CSVs + figures into `folder_path` |
+| `_get_results_folder(options)` | Legacy: returns `Results/{model_name}/` (no timestamp); used by `_save_epsilon`, `_save_lyap_csv` |
 
 ---
 

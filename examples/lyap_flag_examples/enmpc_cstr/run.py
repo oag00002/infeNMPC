@@ -22,12 +22,12 @@ from pathlib import Path
 # Allow plain `import model` to resolve to model.py in this directory.
 sys.path.insert(0, str(Path(__file__).parent))
 
-import model  # noqa: E402  (local model.py)
+import small_cstr_model  # noqa: E402  (local model.py)
 
 from infeNMPC import Options, mpc_loop  # noqa: E402
 
 options = Options.for_model_module(
-    model,
+    small_cstr_model,
     # ---- Simulation control ----
     num_horizons=100,
     sampling_time=1,

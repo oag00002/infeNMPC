@@ -25,6 +25,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Local task notes
+NEXT_TASKS_README.md
+
 # Distribution / packaging
 dist/
 build/

@@ -44,7 +44,7 @@ def _ipopt_solver():
     solver = pyo.SolverFactory('ipopt')
     solver.options['linear_solver'] = 'ma57'
     solver.options['OF_ma57_automatic_scaling'] = 'yes'
-    solver.options['max_iter'] = 6000
+    solver.options['max_iter'] = 500
     solver.options['halt_on_ampl_error'] = 'yes'
     solver.options['bound_relax_factor'] = 0
     return solver
@@ -209,6 +209,21 @@ def _make_infinite_horizon_model(m, options):
     m.infinite_block = _infinite_block_gen(m.infinite_block, options)
     m = _link_blocks(m)
 
+    # Lyapunov stability constraint for infinite-horizon models.
+    # V = finite_block.phi_track (Riemann sum over FE endpoints)
+    #   + infinite_block.phi_track[tau=1] (ODE integral over transformed domain)
+    # Constraint: V - V_prev <= -delta * first_stage_cost_prev
+    if options.lyap_flag:
+        m.V_prev = pyo.Param(mutable=True, initialize=1e10)
+        m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
+        tau_last = m.infinite_block.time.last()
+        m.lyap_stability_constraint = pyo.Constraint(
+            expr=(
+                m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
+                <= -options.lyap_delta * m.first_stage_cost_prev
+            )
+        )
+
     m.interface = DynamicModelInterface(
         m.finite_block, m.finite_block.time, clean_model=True
     )
@@ -282,6 +297,19 @@ def _make_finite_horizon_model(m, options):
 
     m.interface = DynamicModelInterface(m, m.time, clean_model=True)
 
+    # Load the steady-state solution at every time point as a warm-start.
+    # This gives all state variables (e.g. tray compositions, holdups) and MVs
+    # physically consistent values before anything is fixed.  Without this, models
+    # whose `initial_values` are indexed by CV_index only (and whose CVs are
+    # algebraic rather than differential state variables) leave state variables at
+    # rough `initialize=...` guesses that can be inconsistent with the MV
+    # initialization values, making the plant's initial solve infeasible.
+    # The subsequent `initial_data` load then overrides whichever variables
+    # `initial_values` covers (e.g. Ca/Cb for the CSTR), so existing behaviour
+    # for models where the state IS fully specified by `initial_values` is unchanged.
+    for t in m.time:
+        m.interface.load_data(steady_state_data, time_points=t)
+
     if options.initialize_with_initial_data:
         for time in m.time:
             m.interface.load_data(initial_data, time_points=time)
@@ -322,35 +350,6 @@ def _finite_block_gen(m, options):
     m.deriv_vars = deriv_vars
     m.state_vars = state_vars
 
-    # phi_track for finite-horizon-only models (infinite horizon adds it on the
-    # infinite block instead; no time-compression transform is needed here)
-    if not options.infinite_horizon:
-        track_list_ft = list(m.CV_index) + list(m.MV_index)
-        c_raw_ft = options.stage_cost_weights or []
-        c_track_ft = (
-            c_raw_ft[:len(track_list_ft)]
-            if len(c_raw_ft) >= len(track_list_ft)
-            else [1.0] * len(track_list_ft)
-        )
-
-        m.phi_track = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
-        m.phi_track[0].fix(0)
-        m.dphidt_track = DerivativeVar(m.phi_track, wrt=m.time)
-
-        def _phi_track_finite_rule(m, t):
-            if t == 0:
-                return pyo.Constraint.Skip
-            tracking_cost = sum(
-                c_track_ft[i] * (
-                    _add_time_indexed_expression(m, var, t)
-                    - m.steady_state_values[var]
-                )**2
-                for i, var in enumerate(track_list_ft)
-            )
-            return m.dphidt_track[t] == tracking_cost
-
-        m.phi_track_ode = pyo.Constraint(m.time, rule=_phi_track_finite_rule)
-
     discretizer = pyo.TransformationFactory('dae.collocation')
     discretizer.apply_to(
         m, ncp=options.ncp_finite, nfe=options.nfe_finite,
@@ -370,16 +369,42 @@ def _finite_block_gen(m, options):
 
     _model.equations_write(m)
 
-    if options.lyap_flag and not options.infinite_horizon:
-        m.V_prev = pyo.Param(mutable=True, initialize=1e10)
-        m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
-        t_last = m.time.last()
-        m.lyap_stability_constraint = pyo.Constraint(
-            expr=(
-                m.phi_track[t_last] - m.V_prev
-                <= -options.lyap_delta * m.first_stage_cost_prev
-            )
+    if options.lyap_flag:
+        track_list_ft = list(m.CV_index) + list(m.MV_index)
+        c_raw_ft = options.stage_cost_weights or []
+        c_track_ft = (
+            c_raw_ft[:len(track_list_ft)]
+            if len(c_raw_ft) >= len(track_list_ft)
+            else [1.0] * len(track_list_ft)
         )
+        # Sum tracking cost at each FE right-endpoint (Radau points), skipping t=0.
+        # With LAGRANGE-RADAU, FE endpoints are collocation points, so MVs exist there.
+        fe_pts_ft = [t for t in m.time.get_finite_elements() if t != m.time.first()]
+
+        def _phi_track_expr(m):
+            return sum(
+                c_track_ft[i] * (
+                    _add_time_indexed_expression(m, var, t)
+                    - m.steady_state_values[var]
+                )**2
+                for t in fe_pts_ft
+                for i, var in enumerate(track_list_ft)
+            )
+
+        m.phi_track = pyo.Expression(rule=_phi_track_expr)
+
+        if not options.infinite_horizon:
+            # For finite-only: Lyapunov constraint lives here.
+            # For infinite horizon: combined constraint is added on the parent ConcreteModel
+            # in _make_infinite_horizon_model, referencing both blocks.
+            m.V_prev = pyo.Param(mutable=True, initialize=1e10)
+            m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
+            m.lyap_stability_constraint = pyo.Constraint(
+                expr=(
+                    m.phi_track - m.V_prev
+                    <= -options.lyap_delta * m.first_stage_cost_prev
+                )
+            )
 
     return m
 
@@ -589,18 +614,6 @@ def _infinite_block_gen(m, options):
 
         m.endpoint_state_constraints = pyo.Constraint(
             cv_list_ep, rule=_endpoint_state_rule
-        )
-
-    # --- Lyapunov stability constraint ---
-    if options.lyap_flag:
-        m.V_prev = pyo.Param(mutable=True, initialize=1e10)
-        m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
-        tau_last = m.time.last()
-        m.lyap_stability_constraint = pyo.Constraint(
-            expr=(
-                m.phi_track[tau_last] - m.V_prev
-                <= -options.lyap_delta * m.first_stage_cost_prev
-            )
         )
 
     _transform_model_derivatives(m, deriv_vars)

@@ -20,17 +20,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import model  # noqa: E402
+import ternary_distillation_model  # noqa: E402
 
 from infeNMPC import Options, mpc_loop  # noqa: E402
 
 options = Options.for_model_module(
-    model,
+    ternary_distillation_model,
     # ---- Simulation control ----
     num_horizons=10,
     sampling_time=1,
     # ---- Finite-horizon discretization ----
-    nfe_finite=2,
+    nfe_finite=3,
     ncp_finite=3,
     # ---- Infinite-horizon discretization ----
     infinite_horizon=False,
@@ -49,7 +49,7 @@ options = Options.for_model_module(
     stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     beta=1.0,
     # ---- Output ----
-    tee_flag=True,
+    tee_flag=False,
     save_data=True,
     save_figure=True,
     # ---- Disturbances ----
@@ -59,6 +59,8 @@ options = Options.for_model_module(
     # ---- Lyapunov stability constraint ----
     lyap_flag=True,
     lyap_delta=0.01,
+    # ---- Debugging ----
+    debug_flag=False,
 )
 
 if __name__ == '__main__':
