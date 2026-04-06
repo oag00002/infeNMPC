@@ -28,6 +28,10 @@ Thumbs.db
 # Local task notes
 NEXT_TASKS_README.md
 
+# Assignment submission documents (not part of the codebase)
+project1_submission.md
+project1_submission.pdf
+
 # Distribution / packaging
 dist/
 build/
