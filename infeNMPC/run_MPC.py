@@ -9,10 +9,11 @@ from .controllers import InfiniteHorizonController, FiniteHorizonController
 from .tools.initialization_tools import _assist_initialization_infinite, _assist_initialization_finite
 from .data_save_and_plot import (
     _handle_mpc_results,
-    _get_results_folder,
+    _create_run_folder,
     _save_io_csv,
 )
 from .tools.indexing_tools import _get_variable_key_for_data, _add_time_indexed_expression
+from .tools.debug_tools import _report_constraint_violations
 
 
 def mpc_loop(options: Options):
@@ -35,6 +36,7 @@ def mpc_loop(options: Options):
             controller = InfiniteHorizonController(options)
         t0_controller = controller.finite_block.time.first()
         state_vars = controller.finite_block.state_vars
+        resolved_gamma = controller.infinite_block.gamma
     else:
         if options.initialization_assist:
             controller = _assist_initialization_finite(options)
@@ -42,6 +44,10 @@ def mpc_loop(options: Options):
             controller = FiniteHorizonController(options)
         t0_controller = controller.time.first()
         state_vars = controller.state_vars
+        resolved_gamma = None
+
+    # Create the timestamped results folder now so safe_run writes go there too.
+    run_folder = _create_run_folder(options, resolved_gamma=resolved_gamma)
 
     plant = Plant(options)
 
@@ -107,7 +113,7 @@ def mpc_loop(options: Options):
     io_data_array.append(initial_cv_row + initial_mv_row)
     time_series.append(0.0)
 
-    safe_run_folder = _get_results_folder(options) if options.safe_run else None
+    safe_run_folder = run_folder if options.safe_run else None
 
     loop_iter = tqdm(range(options.num_horizons), desc="Running MPC")
 
@@ -119,18 +125,40 @@ def mpc_loop(options: Options):
 
         simulation_time = (i + 1) * options.sampling_time
 
-        controller.solve()
+        try:
+            controller.solve()
+        except RuntimeError:
+            if options.debug_flag:
+                _report_constraint_violations(
+                    controller._model, label=f"controller failure at iteration {i}"
+                )
+            raise
         cpu_time.append(controller.last_solve_time)
+
+        if options.debug_flag:
+            _report_constraint_violations(
+                controller._model, label=f"controller iteration {i}"
+            )
 
         # Update Lyapunov stability constraint parameters for next iteration
         if options.lyap_flag:
+            # V_prev / first_stage_cost_prev live on controller._model in both cases.
+            # For infinite horizon: V = finite Riemann sum + infinite ODE integral.
+            # For finite horizon:   V = finite Riemann sum only.
+            lyap_block = controller
             if options.infinite_horizon:
-                lyap_block = controller.infinite_block
                 stage_block = controller.finite_block
+                V_current = (
+                    pyo.value(controller.finite_block.phi_track)
+                    + pyo.value(
+                        controller.infinite_block.phi_track[
+                            controller.infinite_block.time.last()
+                        ]
+                    )
+                )
             else:
-                lyap_block = controller
                 stage_block = controller
-            V_current = pyo.value(lyap_block.phi_track[lyap_block.time.last()])
+                V_current = pyo.value(controller.phi_track)
             track_list = list(stage_block.CV_index) + list(stage_block.MV_index)
             c_raw = options.stage_cost_weights or []
             c_track = c_raw[:len(track_list)] if len(c_raw) >= len(track_list) else [1.0] * len(track_list)
@@ -217,7 +245,8 @@ def mpc_loop(options: Options):
         controller.interface.shift_values_by_time(options.sampling_time)
         controller.interface.load_data(tf_data, time_points=t0_controller)
 
-    _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options)
+    _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options,
+                        folder_path=run_folder)
 
 
 if __name__ == "__main__":

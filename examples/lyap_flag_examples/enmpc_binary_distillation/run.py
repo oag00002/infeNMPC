@@ -19,12 +19,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import model  # noqa: E402
+import binary_distillation_model  # noqa: E402
 
 from infeNMPC import Options, mpc_loop  # noqa: E402
 
 options = Options.for_model_module(
-    model,
+    binary_distillation_model,
     # ---- Simulation control ----
     num_horizons=25,
     sampling_time=10,

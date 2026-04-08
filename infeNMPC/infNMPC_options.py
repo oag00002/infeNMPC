@@ -78,6 +78,9 @@ class Options:
         Distribution type for disturbances (e.g. ``'normal'``).
     disturb_seeded : bool
         If True, use a fixed random seed for reproducibility.
+    debug_flag : bool
+        If True, print the most violated constraints after every controller
+        solve (and before re-raising on solver failure).
     """
 
     # Model selection
@@ -117,7 +120,7 @@ class Options:
 
     # Lyapunov stability constraint
     lyap_flag: bool = False
-    lyap_epsilon: float = 0.01
+    lyap_delta: float = 0.01
 
     # Display / data-output options
     safe_run: bool = False
@@ -128,6 +131,9 @@ class Options:
     disturb_flag: bool = False
     disturb_distribution: str = 'normal'
     disturb_seeded: bool = True
+
+    # Debugging
+    debug_flag: bool = False
 
     def copy(self, **overrides) -> 'Options':
         """Return a shallow copy of this Options with selected fields overridden."""

@@ -29,6 +29,86 @@ from .tools.indexing_tools import (
 from .tools.collocation_tools import _compute_gamma_from_collocation
 
 
+def _fix_initial_conditions_at_t0(block):
+    """
+    Fix initial conditions at t=0 for differential state vars and algebraic CVs.
+
+    For models where CVs are algebraic variables (no DerivativeVar), simply
+    fixing all state vars at t=0 and separately loading initial_data creates
+    contradictions through the defining equality constraints.  For example, if
+    ``xD1A_def: xD1A[t] == x1[41,1,t]`` holds and we fix both ``xD1A[0]=0.90``
+    and ``x1[41,1,0]=0.95`` (steady-state), the constraint is violated.
+
+    This function handles the two cases correctly:
+
+    **Differential CVs** (CV is in state_vars, e.g. CSTR Ca/Cb):
+      Nothing special — state vars at t=0 are fixed to their current values,
+      which have already been loaded from initial_data by the caller.
+
+    **Algebraic CVs** (CV not in state_vars, e.g. distillation xD1A):
+      1. Fix ``cv[t0]`` to the value already loaded from initial_data.
+      2. Scan equality constraints at t=0 to find state vars that are now
+         *determined* through those fixed algebraic CVs (e.g. x1[41,1,0] via
+         xD1A_def).  Those state vars are left free — their t=0 value is set
+         implicitly by the constraint rather than by a direct fix.
+      3. Fix all remaining state vars at t=0 to their current values (which
+         come from the model's ``initialize=...`` functions — the intended
+         physical initial conditions for variables not covered by initial_values).
+
+    Parameters
+    ----------
+    block : pyo.ConcreteModel or pyo.Block
+        Must have ``.time``, ``.CV_index``, and ``.state_vars`` (set of Var
+        components).  Must have been discretised before this is called.
+    """
+    t0 = block.time.first()
+    state_var_components = block.state_vars  # set of Var components
+
+    # Identify algebraic CVs: in CV_index but NOT a differential state variable
+    algebraic_cv_names = [
+        cv for cv in block.CV_index
+        if getattr(block, cv) not in state_var_components
+    ]
+
+    # Fix algebraic CVs at t0 to the values loaded from initial_data
+    algebraic_ids_at_t0 = set()
+    for cv_name in algebraic_cv_names:
+        cv_var = getattr(block, cv_name)
+        if t0 in cv_var:
+            cv_var[t0].fix()
+            algebraic_ids_at_t0.add(id(cv_var[t0]))
+
+    # Scan equality constraints at t0 to find state vars whose t=0 value is
+    # already determined through the fixed algebraic CVs.  Those must not also
+    # be independently fixed (which would over-constrain the system).
+    state_vars_to_skip = set()
+    if algebraic_ids_at_t0:
+        for con in block.component_objects(pyo.Constraint, active=True):
+            for idx in list(con.keys()):
+                time_val = idx[-1] if isinstance(idx, tuple) else idx
+                if time_val != t0:
+                    continue
+                expr = con[idx].expr
+                if expr is None:
+                    continue
+                all_vars = list(identify_variables(expr, include_fixed=True))
+                # Only act on constraints that involve a fixed algebraic CV at t0
+                if not any(id(v) in algebraic_ids_at_t0 for v in all_vars):
+                    continue
+                # Free state vars in this constraint are determined by it
+                for v in all_vars:
+                    if (not v.is_fixed()
+                            and v.parent_component() in state_var_components):
+                        state_vars_to_skip.add(id(v))
+
+    # Fix remaining state vars at t0 (those not determined by algebraic CVs)
+    for var in state_var_components:
+        for index in var:
+            time_val = index[-1] if isinstance(index, tuple) else index
+            if time_val == t0 and id(var[index]) not in state_vars_to_skip:
+                var[index].fix()
+
+
 def _check_optimal(results, label=""):
     """Raise RuntimeError if the solver did not return an optimal solution."""
     tc = results.solver.termination_condition
@@ -91,7 +171,7 @@ def _make_steady_state_model(m, options):
     return m
 
 
-def _solve_steady_state_model(m, target, options):
+def _solve_steady_state_model(m, target, options, label="ss"):
     """
     Solve the steady-state model and return data at the initial time point.
 
@@ -104,6 +184,9 @@ def _solve_steady_state_model(m, target, options):
     m : pyo.ConcreteModel
     target : ScalarData or None
     options : Options
+    label : str
+        Short name used as the stem of the debug output file
+        (e.g. ``"ss"`` → ``ss_model_output.txt``).
 
     Returns
     -------
@@ -126,6 +209,10 @@ def _solve_steady_state_model(m, target, options):
         m.target_set = var_set
         m.tracking_cost = tr_cost
         m.objective = pyo.Objective(expr=sum(m.tracking_cost[:, 0]))
+
+    if options.debug_flag:
+        with open(f"{label}_model_output.txt", "w") as f:
+            m.pprint(ostream=f)
 
     solver = _ipopt_solver()
     results = solver.solve(m, tee=options.tee_flag)
@@ -166,7 +253,7 @@ def _make_infinite_horizon_model(m, options):
     })
 
     print('Solving Steady State Model')
-    steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options)
+    steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options, label="ss")
 
     steady_state_values = {
         **{cv: steady_state_data.get_data_from_key(_get_variable_key_for_data(m_ss, cv))
@@ -181,18 +268,12 @@ def _make_infinite_horizon_model(m, options):
     m_iv = _make_steady_state_model(m_iv, options)
 
     initial_value_vars = list(m_iv.initial_values.index_set())
-    if all(var in m_iv.CV_index for var in initial_value_vars):
-        initial_data = ScalarData({
-            _get_variable_key_for_data(m_iv, cv): pyo.value(m_iv.initial_values[cv])
-            for cv in initial_value_vars
-        })
-    else:
-        m_iv_target = ScalarData({
-            _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
-            for var in initial_value_vars
-        })
-        print('Solving Initial Value Model')
-        initial_data = _solve_steady_state_model(m_iv, m_iv_target, options)
+    m_iv_target = ScalarData({
+        _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
+        for var in initial_value_vars
+    })
+    print('Solving Initial Value Model')
+    initial_data = _solve_steady_state_model(m_iv, m_iv_target, options, label="iv")
 
     print('Writing Infinite Horizon Model')
 
@@ -209,6 +290,21 @@ def _make_infinite_horizon_model(m, options):
     m.infinite_block = _infinite_block_gen(m.infinite_block, options)
     m = _link_blocks(m)
 
+    # Lyapunov stability constraint for infinite-horizon models.
+    # V = finite_block.phi_track (Riemann sum over FE endpoints)
+    #   + infinite_block.phi_track[tau=1] (ODE integral over transformed domain)
+    # Constraint: V - V_prev <= -delta * first_stage_cost_prev
+    if options.lyap_flag:
+        m.V_prev = pyo.Param(mutable=True, initialize=1e10)
+        m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
+        tau_last = m.infinite_block.time.last()
+        m.lyap_stability_constraint = pyo.Constraint(
+            expr=(
+                m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
+                <= -options.lyap_delta * m.first_stage_cost_prev
+            )
+        )
+
     m.interface = DynamicModelInterface(
         m.finite_block, m.finite_block.time, clean_model=True
     )
@@ -219,11 +315,7 @@ def _make_infinite_horizon_model(m, options):
     else:
         m.interface.load_data(initial_data, time_points=0)
 
-    time0 = m.finite_block.time.first()
-    for var in m.finite_block.state_vars:
-        for index in var:
-            if (isinstance(index, tuple) and index[-1] == time0) or index == time0:
-                var[index].fix()
+    _fix_initial_conditions_at_t0(m.finite_block)
 
     return m
 
@@ -249,7 +341,7 @@ def _make_finite_horizon_model(m, options):
         for var in m_ss.setpoints.index_set()
     })
 
-    steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options)
+    steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options, label="ss")
 
     steady_state_values = {
         **{cv: steady_state_data.get_data_from_key(_get_variable_key_for_data(m_ss, cv))
@@ -262,17 +354,12 @@ def _make_finite_horizon_model(m, options):
     m_iv = _make_steady_state_model(m_iv, options)
 
     initial_value_vars = list(m_iv.initial_values.index_set())
-    if all(var in m_iv.CV_index for var in initial_value_vars):
-        initial_data = ScalarData({
-            _get_variable_key_for_data(m_iv, cv): pyo.value(m_iv.initial_values[cv])
-            for cv in initial_value_vars
-        })
-    else:
-        m_iv_target = ScalarData({
-            _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
-            for var in initial_value_vars
-        })
-        initial_data = _solve_steady_state_model(m_iv, m_iv_target, options)
+    m_iv_target = ScalarData({
+        _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
+        for var in initial_value_vars
+    })
+    print('Solving Initial Value Model')
+    initial_data = _solve_steady_state_model(m_iv, m_iv_target, options, label="iv")
 
     print('Writing Finite Horizon Model')
 
@@ -282,17 +369,24 @@ def _make_finite_horizon_model(m, options):
 
     m.interface = DynamicModelInterface(m, m.time, clean_model=True)
 
+    # Warm-start at t > t0 with steady-state values.
+    # Skipping t=0 preserves the Pyomo initialize=... values there, which are
+    # the model's intended initial conditions for state variables not covered by
+    # initial_values (e.g. tray compositions / holdups in distillation models).
+    # Interior and final time points still receive a physically consistent
+    # steady-state warm-start, which is important for convergence on large models.
+    t_first = m.time.first()
+    for t in m.time:
+        if t != t_first:
+            m.interface.load_data(steady_state_data, time_points=t)
+
     if options.initialize_with_initial_data:
         for time in m.time:
             m.interface.load_data(initial_data, time_points=time)
     else:
-        m.interface.load_data(initial_data, time_points=0)
+        m.interface.load_data(initial_data, time_points=t_first)
 
-    time0 = m.time.first()
-    for var in m.state_vars:
-        for index in var:
-            if (isinstance(index, tuple) and index[-1] == time0) or index == time0:
-                var[index].fix()
+    _fix_initial_conditions_at_t0(m)
 
     return m
 
@@ -322,35 +416,6 @@ def _finite_block_gen(m, options):
     m.deriv_vars = deriv_vars
     m.state_vars = state_vars
 
-    # phi_track for finite-horizon-only models (infinite horizon adds it on the
-    # infinite block instead; no time-compression transform is needed here)
-    if not options.infinite_horizon:
-        track_list_ft = list(m.CV_index) + list(m.MV_index)
-        c_raw_ft = options.stage_cost_weights or []
-        c_track_ft = (
-            c_raw_ft[:len(track_list_ft)]
-            if len(c_raw_ft) >= len(track_list_ft)
-            else [1.0] * len(track_list_ft)
-        )
-
-        m.phi_track = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
-        m.phi_track[0].fix(0)
-        m.dphidt_track = DerivativeVar(m.phi_track, wrt=m.time)
-
-        def _phi_track_finite_rule(m, t):
-            if t == 0:
-                return pyo.Constraint.Skip
-            tracking_cost = sum(
-                c_track_ft[i] * (
-                    _add_time_indexed_expression(m, var, t)
-                    - m.steady_state_values[var]
-                )**2
-                for i, var in enumerate(track_list_ft)
-            )
-            return m.dphidt_track[t] == tracking_cost
-
-        m.phi_track_ode = pyo.Constraint(m.time, rule=_phi_track_finite_rule)
-
     discretizer = pyo.TransformationFactory('dae.collocation')
     discretizer.apply_to(
         m, ncp=options.ncp_finite, nfe=options.nfe_finite,
@@ -361,19 +426,51 @@ def _finite_block_gen(m, options):
             m = discretizer.reduce_collocation_points(
                 m, var=getattr(m, mv), ncp=1, contset=m.time
             )
+        if hasattr(m, 'slack_index'):
+            for sv in m.slack_index:
+                if hasattr(m, sv):
+                    m = discretizer.reduce_collocation_points(
+                        m, var=getattr(m, sv), ncp=1, contset=m.time
+                    )
 
     _model.equations_write(m)
 
-    if options.lyap_flag and not options.infinite_horizon:
-        m.V_prev = pyo.Param(mutable=True, initialize=1e10)
-        m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
-        t_last = m.time.last()
-        m.lyap_stability_constraint = pyo.Constraint(
-            expr=(
-                m.phi_track[t_last] - m.V_prev
-                <= (1 - options.lyap_epsilon) * m.first_stage_cost_prev
-            )
+    if options.lyap_flag:
+        track_list_ft = list(m.CV_index) + list(m.MV_index)
+        c_raw_ft = options.stage_cost_weights or []
+        c_track_ft = (
+            c_raw_ft[:len(track_list_ft)]
+            if len(c_raw_ft) >= len(track_list_ft)
+            else [1.0] * len(track_list_ft)
         )
+        # Sum tracking cost at each FE right-endpoint (Radau points), skipping t=0.
+        # With LAGRANGE-RADAU, FE endpoints are collocation points, so MVs exist there.
+        fe_pts_ft = [t for t in m.time.get_finite_elements() if t != m.time.first()]
+
+        def _phi_track_expr(m):
+            return sum(
+                c_track_ft[i] * (
+                    _add_time_indexed_expression(m, var, t)
+                    - m.steady_state_values[var]
+                )**2
+                for t in fe_pts_ft
+                for i, var in enumerate(track_list_ft)
+            )
+
+        m.phi_track = pyo.Expression(rule=_phi_track_expr)
+
+        if not options.infinite_horizon:
+            # For finite-only: Lyapunov constraint lives here.
+            # For infinite horizon: combined constraint is added on the parent ConcreteModel
+            # in _make_infinite_horizon_model, referencing both blocks.
+            m.V_prev = pyo.Param(mutable=True, initialize=1e10)
+            m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
+            m.lyap_stability_constraint = pyo.Constraint(
+                expr=(
+                    m.phi_track - m.V_prev
+                    <= -options.lyap_delta * m.first_stage_cost_prev
+                )
+            )
 
     return m
 
@@ -583,18 +680,6 @@ def _infinite_block_gen(m, options):
 
         m.endpoint_state_constraints = pyo.Constraint(
             cv_list_ep, rule=_endpoint_state_rule
-        )
-
-    # --- Lyapunov stability constraint ---
-    if options.lyap_flag:
-        m.V_prev = pyo.Param(mutable=True, initialize=1e10)
-        m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
-        tau_last = m.time.last()
-        m.lyap_stability_constraint = pyo.Constraint(
-            expr=(
-                m.phi_track[tau_last] - m.V_prev
-                <= (1 - options.lyap_epsilon) * m.first_stage_cost_prev
-            )
         )
 
     _transform_model_derivatives(m, deriv_vars)

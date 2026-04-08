@@ -13,6 +13,9 @@ dependencies = [
     "tqdm",
 ]
 
+[project.scripts]
+check-model = "infeNMPC.check_model:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["infeNMPC*"]

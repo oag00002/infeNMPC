@@ -6,6 +6,8 @@ __pycache__/
 
 # Solver output / intermediate files
 model_output.txt
+ss_model_output.txt
+iv_model_output.txt
 *.nl
 *.sol
 *.log
@@ -24,6 +26,13 @@ Thumbs.db
 # IDE settings
 .vscode/
 .idea/
+
+# Local task notes
+NEXT_TASKS_README.md
+
+# Assignment submission documents (not part of the codebase)
+project1_submission.md
+project1_submission.pdf
 
 # Distribution / packaging
 dist/

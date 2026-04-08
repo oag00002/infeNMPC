@@ -4,6 +4,7 @@ Plant model for closed-loop NMPC simulations.
 import pyomo.environ as pyo
 from .make_model import _make_finite_horizon_model, _ipopt_solver, _check_optimal
 from .infNMPC_options import Options
+from .tools.debug_tools import _report_constraint_violations
 
 
 class Plant:
@@ -50,13 +51,15 @@ class Plant:
         self._model = m
         self._solver = _ipopt_solver()
 
-        print('Plant Initial Solve')
-        self.solve()
-
     def solve(self):
         """Solve the plant model in place."""
         results = self._solver.solve(self._model, tee=self.options.tee_flag)
-        _check_optimal(results, "plant")
+        try:
+            _check_optimal(results, "plant")
+        except RuntimeError:
+            if self.options.debug_flag:
+                _report_constraint_violations(self._model, label="plant failure")
+            raise
 
     def __getattr__(self, name: str):
         # Delegate unknown attribute lookups to the underlying Pyomo model.
