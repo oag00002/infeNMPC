@@ -32,10 +32,12 @@ infeNMPC/
 │   ├── plant.py                     # Plant — single-step dynamic simulator
 │   ├── make_model.py                # Pyomo model construction (most complex file)
 │   ├── model_equations.py           # Model loader: _get_model(), _load_model()
-│   ├── data_save_and_plot.py        # CSV export, figure generation, results folder
+│   ├── check_model.py               # Model validator: static AST + import + dynamic checks
+│   ├── data_save_and_plot.py        # CSV export, figure generation, plot_results.py script
 │   ├── live_plot.py                 # Live monitoring subprocess (used with safe_run=True)
 │   └── tools/
 │       ├── collocation_tools.py     # _compute_gamma_from_collocation()
+│       ├── debug_tools.py           # _report_constraint_violations()
 │       ├── indexing_tools.py        # Variable key helpers, expression builders
 │       └── initialization_tools.py  # Progressive sampling-time warm-start
 ├── examples/
@@ -44,10 +46,12 @@ infeNMPC/
 │   │   ├── pendulum/                # Inverted pendulum on cart
 │   │   ├── binary_distillation/     # 42-tray distillation column (finite horizon only)
 │   │   ├── enmpc_binary_distillation/
-│   │   └── nonisothermal_cstr/
-│   ├── lyap_flag_examples/          # Same systems with lyap_flag=True
+│   │   ├── nonisothermal_cstr/
+│   │   └── ternary_distillation_double_column/  # Two-column ternary distillation (246 states)
+│   ├── lyap_flag_examples/          # Same systems with lyap_flag=True (or optional)
 │   │   ├── enmpc_cstr/              # CANONICAL WORKING EXAMPLE — run this to test
-│   │   └── enmpc_binary_distillation/
+│   │   ├── enmpc_binary_distillation/
+│   │   └── enmpc_ternary_distillation/  # Two-column ternary distillation with Lyap support
 │   └── live_plot_examples/
 │       └── enmpc_cstr.py            # Single-file live-monitoring example
 └── pyproject.toml                   # Dependencies: pyomo, idaes-pse, tqdm
@@ -100,6 +104,7 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `disturb_flag` | `False` | Apply random plant disturbances |
 | `disturb_distribution` | `'normal'` | Disturbance distribution type |
 | `disturb_seeded` | `True` | Use fixed random seed |
+| `debug_flag` | `False` | Print most-violated constraints after every controller solve and on failures |
 
 ---
 
@@ -188,12 +193,17 @@ mpc_loop(options)
   │   returns a pre-warmed controller
   ├─ [else] InfiniteHorizonController(options) or FiniteHorizonController(options)
   │
+  ├─ _create_run_folder(options, resolved_gamma)  ← creates timestamped folder immediately
+  │
   ├─ Plant(options)                   # single-step plant, MVs fixed
   │
   ├─ get initial CV values from plant
   │
   └─ for i in range(num_horizons):
+        [if i==10] write model_output.txt  ← debug dump, always runs
+
         controller.solve()            # IPOPT solve, records cpu time
+        [if debug_flag] _report_constraint_violations(controller._model, ...)
 
         [if lyap_flag]:
           V_current = phi_track[τ=1] on infinite (or finite) block
@@ -216,7 +226,8 @@ mpc_loop(options)
         controller.interface.shift_values_by_time(sampling_time)
         controller.interface.load_data(tf_data, time_points=t0)  # update controller IC
 
-  _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options)
+  _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options,
+                      folder_path=run_folder)
 ```
 
 **Note:** At iteration `i==10`, the controller model is printed to `model_output.txt` (a debug dump left in the loop body).
@@ -289,7 +300,7 @@ For each state variable: `finite_block.var[t_end] == infinite_block.var[t_start]
 
 ### `Controller` (base)
 - Holds `self._model` (Pyomo ConcreteModel), `self._solver` (IPOPT)
-- `solve()`: calls IPOPT, checks termination condition, records `self.last_solve_time` (CPU)
+- `solve()`: calls IPOPT, checks termination condition, records `self.last_solve_time` (CPU via `resource.getrusage`)
 - `__getattr__`: falls through to `self._model` — so `controller.finite_block`, `controller.interface`, etc. all work
 
 ### `InfiniteHorizonController(options, data=None)`
@@ -299,12 +310,13 @@ For each state variable: `finite_block.var[t_end] == infinite_block.var[t_start]
    - **custom_objective**: `Σ_t [stage_cost(t) - ss_obj_value]` over finite elements + `beta/sampling_time * phi[τ=1]`
    - **terminal_cost_riemann**: quadratic stage cost + Riemann sum over infinite block
    - **standard quadratic**: quadratic stage cost + `beta/sampling_time * phi[τ=1]`
-4. Dumps model to `model_output.txt` (always)
+4. Dumps model to `model_output.txt` (always, at construction time)
 5. Performs initial solve
 
 ### `FiniteHorizonController(options, data=None)`
 - Same pattern but single block, no infinite block
 - Objective sums quadratic (or custom) stage cost over finite elements only
+- Also dumps model to `model_output.txt` at construction time
 
 ---
 
@@ -318,8 +330,58 @@ Plant(options)
 - Fixes all MVs (`var.fix()`)
 - If `ncp_finite > 1`: deactivates `{mv_name}_interpolation_constraints`
 - Adds dummy objective `expr=1`
-- `solve()`: IPOPT solve (no optimal check needed, just integration)
+- `solve()`: IPOPT solve; on failure, calls `_report_constraint_violations` if `debug_flag=True`
 - `__getattr__`: falls through to `self._model`
+
+---
+
+## Model Validator (`check_model.py`)
+
+A standalone validator for user `model.py` files. Runs three levels of checks:
+
+**Level 1 — Static AST:**
+- Valid Python syntax
+- `variables_initialize()` and `equations_write()` are defined
+- `custom_objective()` and `default_options()` detected (WARN if absent)
+- `variables_initialize()` does not declare `m.time` (framework injects it)
+- Both required functions return `m`
+
+**Level 2 — Import:**
+- Module loads without error
+
+**Level 3 — Dynamic Pyomo:**
+- `variables_initialize()` runs on a real `ConcreteModel` with `m.time` set
+- `m.MV_index`, `m.CV_index`, `m.setpoints`, `m.initial_values` are declared
+- At least one `DerivativeVar` is present
+- `m.MV_index` and `m.CV_index` are non-empty
+- `equations_write()` runs after collocation discretization
+
+**Usage:**
+```bash
+check-model path/to/model.py            # full check (static + import + dynamic)
+check-model path/to/model.py --no-dynamic  # skip Pyomo dynamic check
+```
+
+**Programmatic API:**
+```python
+from infeNMPC.check_model import validate
+report = validate(path, dynamic=True)
+print(report.ok)       # True if no failures
+print(report.failed)   # number of FAIL results
+```
+
+---
+
+## Debug Tools (`tools/debug_tools.py`)
+
+```python
+_report_constraint_violations(model, n=10, tol=1e-6, label="")
+```
+
+Traverses all active constraints (including nested blocks) and prints the `n` most violated. Used automatically when `options.debug_flag=True`:
+- After every successful controller solve (in `run_MPC.py`)
+- After a failed controller solve (in `run_MPC.py`, before re-raising)
+- After a failed plant solve (in `plant.py`, before re-raising)
 
 ---
 
@@ -339,8 +401,8 @@ plant.interface.load_data(input_data, time_points=new_data_time)
 # 3. Solve plant
 plant.solve()
 
-# 4. Get plant state at end of interval
-tf_data = ScalarData({key: value, ...})  # state vars only
+# 4. Get plant state at end of interval (state vars only, not MVs)
+tf_data = ScalarData({key: value, ...})
 
 # 5. Update plant IC for next step
 plant.interface.load_data(tf_data)
@@ -398,9 +460,10 @@ Results/
   {model_name}/
     {YYYY-MM-DD}/
       {HH-MM-SS}/
-        run_config.txt  ← all Options fields + resolved gamma + git branch
-        io_data.csv     ← CV and MV trajectories (Time, Ca, Cb, Fa0, ...)
-        sim_data.csv    ← full DAE trajectory from plant
+        run_config.txt    ← all Options fields + resolved gamma + git branch
+        io_data.csv       ← CV and MV trajectories (Time, Ca, Cb, Fa0, ...)
+        sim_data.csv      ← full DAE trajectory from plant
+        plot_results.py   ← auto-generated, standalone plotting script
         CV_1_Ca.png, CV_2_Cb.png, MV_1_Fa0.png  ← trajectory plots
 ```
 
@@ -410,13 +473,24 @@ Results/
 
 For `safe_run=True`, `io_data.csv` is overwritten after every iteration into the same timestamped folder.
 
+### Auto-generated `plot_results.py`
+
+`_write_plot_script()` is called at the end of every run and deposits a self-contained Python script into the results folder. It is pre-populated with:
+- Active `PLOTS` entries for every CV and MV (using their `CV_display_names` / `MV_display_names` as LaTeX labels)
+- Commented-out entries for all remaining `sim_data.csv` columns (easy to uncomment for state-variable diagnostics)
+- `SETPOINTS` values from `plant.steady_state_values` for each CV
+- Both PDF (vector) and PNG (raster) output per figure
+
+Run it standalone: `python Results/.../plot_results.py`
+
 ### Key functions
 
 | Function | Purpose |
 |---|---|
 | `_create_run_folder(options, resolved_gamma)` | Create `Results/model/date/time/`, write `run_config.txt`, return path |
-| `_handle_mpc_results(..., folder_path)` | Save CSVs + figures into `folder_path` |
-| `_get_results_folder(options)` | Legacy: returns `Results/{model_name}/` (no timestamp); used by `_save_epsilon`, `_save_lyap_csv` |
+| `_handle_mpc_results(..., folder_path)` | Save CSVs + figures + `plot_results.py` into `folder_path` |
+| `_write_plot_script(folder_path, options, plant, sim_data)` | Generate standalone plotting script |
+| `_get_results_folder(options)` | Legacy: returns `Results/{model_name}/` (no timestamp) |
 
 ---
 
@@ -432,6 +506,9 @@ Builds a throwaway Pyomo model, discretizes it with LAGRANGE-LEGENDRE, reads the
 - `_get_derivative_and_state_vars(model)` → `(set of DerivativeVars, set of state Vars)`
 - `_get_disc_eq_time_points(m)` → sorted list of collocation time points
 
+### `debug_tools`
+- `_report_constraint_violations(model, n=10, tol=1e-6, label="")` → print top-N most violated constraints
+
 ### `initialization_tools`
 Progressive warm-start: solve sequence of controllers starting at `initialization_assist_sampling_time_start` (e.g., 10.0), reducing by factor 0.9 until reaching `options.sampling_time`. Each solve's solution seeds the next. Used for stiff systems that won't converge from cold-start at the target sampling time.
 
@@ -443,7 +520,7 @@ All solvers are configured identically via `_ipopt_solver()`:
 ```python
 solver.options['linear_solver'] = 'ma57'
 solver.options['OF_ma57_automatic_scaling'] = 'yes'
-solver.options['max_iter'] = 6000
+solver.options['max_iter'] = 500
 solver.options['halt_on_ampl_error'] = 'yes'
 solver.options['bound_relax_factor'] = 0
 ```
@@ -468,7 +545,7 @@ solver.options['bound_relax_factor'] = 0
 **Location**: `examples/lyap_flag_examples/enmpc_cstr/`
 
 ```
-model.py:
+small_cstr_model.py:
   MV_index = ["Fa0"]          (feed rate of A, bounds [10, 20] kmol/h)
   CV_index = ["Ca", "Cb"]     (concentrations in mol/L)
   ODEs: dCa/dt = Fa0/V*(Caf - Ca) - k*Ca
@@ -478,14 +555,14 @@ model.py:
   initial_values: Ca=0, Cb=0
 
 run.py:
-  options = Options.for_model_module(model,
+  options = Options.for_model_module(small_cstr_model,
     num_horizons=100, sampling_time=1,
     nfe_finite=2, ncp_finite=1,
     nfe_infinite=5, ncp_infinite=1,
     infinite_horizon=True, endpoint_constraints=False,
     custom_objective=True,
     stage_cost_weights=[1, 1, 1/600], beta=1,
-    lyap_flag=True, lyap_epsilon=0.99,
+    lyap_flag=True, lyap_delta=0.01,
     save_data=True, save_figure=True,
   )
   mpc_loop(options)
@@ -495,9 +572,43 @@ Run from repo root: `python examples/lyap_flag_examples/enmpc_cstr/run.py`
 
 ---
 
-## Known Issues / State at Last Review (2026-03-26)
+## Example: Two-Column Ternary Distillation (new large-scale example)
 
-- Branch: `fix-lyapunov-function`
+**System**: Two distillation columns in series separating A/B/C
+**Locations**:
+- `examples/standard/ternary_distillation_double_column/` — standard (no Lyapunov)
+- `examples/lyap_flag_examples/enmpc_ternary_distillation/` — Lyapunov support (`lyap_flag=False` by default)
+
+```
+ternary_distillation_model.py:
+  MV_index = ["VB1", "LT1", "D1", "B1", "VB2", "LT2", "D2", "B2"]
+  CV_index = ["xD1A", "xD2B", "xC"]   (algebraic CVs, not differential)
+  246 state variables: x1[tray,comp], M1[tray] (Col 1); x2[tray,comp], M2[tray] (Col 2)
+  Francis Weir formula liquid dynamics
+  custom_objective: minimize feed + energy cost minus product revenue
+  slack_index: ["xD1A_eps", "xD2B_eps", "xC_eps", "M1_eps", "M2_eps"]
+
+run.py (lyap_flag_examples version):
+  options = Options.for_model_module(ternary_distillation_model,
+    num_horizons=10, sampling_time=1,
+    nfe_finite=3, ncp_finite=3,
+    infinite_horizon=False,
+    custom_objective=True,
+    input_suppression=True, input_suppression_factor=1e3,
+    stage_cost_weights=[1e4, 1e4, 1e4, 1, 1, 1, 1, 1, 1, 1, 1],
+    lyap_flag=False, lyap_delta=0.01,
+    debug_flag=True, safe_run=True,
+  )
+```
+
+This model uses **algebraic CVs** (`xD1A`, `xD2B`, `xC` are computed from tray compositions via equality constraints), so `_fix_initial_conditions_at_t0` applies the algebraic IC logic. It also demonstrates `m.slack_index` — an optional set for slack variables used for constraint softening.
+
+---
+
+## Known Issues / State at Last Review (2026-04-07)
+
+- Branch: `add-double-column-clean`
 - Most examples are not confirmed working; the CSTR lyap_flag example is the primary test case
-- `model_output.txt` is written to the working directory at iteration 10 (debug code left in `run_MPC.py:117`)
+- `model_output.txt` is written to the working directory **twice**: at controller construction time (`controllers.py`) and again at iteration 10 in `run_MPC.py:122–124` (the latter overwrites it). Both are debug behavior.
 - `gamma` in the results folder path reflects `options.gamma` (which stays `None` until the block stores it on `infinite_block.gamma` — the folder path may show `gamma_None` even after auto-computation)
+- The ternary distillation example is still being tested/developed; `lyap_flag=False` by default

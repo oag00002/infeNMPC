@@ -61,7 +61,7 @@ def variables_initialize(m):
     m.Muw = pyo.Param(initialize=0.25)      # Liquid holdup under weir (kmol)
 
     # ---- Feed Parameters (Disturbances) ----
-    m.F = pyo.Param(initialize=1.4, mutable=True)                          # Feed flow rate
+    m.F = pyo.Param(initialize=1.41, mutable=True)                         # Feed flow rate
     m.qF = pyo.Param(initialize=1.0, mutable=True)                        # Feed liquid fraction
     m.zF = pyo.Param(m.comp, initialize={1: 0.4, 2: 0.2}, mutable=True)   # Feed composition
 
@@ -116,10 +116,6 @@ def variables_initialize(m):
     m.LT2 = pyo.Var(m.time, initialize=2.138, bounds=(0, 10))   # Reflux
     m.D2 = pyo.Var(m.time, initialize=0.26, bounds=(0, 5))      # Distillate
     m.B2 = pyo.Var(m.time, initialize=0.56, bounds=(0, 5))      # Bottoms
-
-    # ---- Algebraic Variables (Vapor flows — constant molar overflow) ----
-    m.V1 = pyo.Var(m.tray, m.time, initialize=4.0, bounds=(0, 20))
-    m.V2 = pyo.Var(m.tray, m.time, initialize=2.4, bounds=(0, 20))
 
     # ---- Controlled Variable Algebraic Variables ----
     # Declared as Var (not Expression) so the framework can load/extract data by key.
@@ -204,21 +200,17 @@ def equations_write(m):
                     (1 - m.x1[k, 1, i] - m.x1[k, 2, i])
                 )
 
-    # ---- Vapor Flows Column 1 (constant molar overflow) ----
+    # ---- Vapor Flows Column 1 (constant molar overflow, fe-indexed only like AMPL) ----
+    # Stored as inline expressions in a dict — piecewise-constant by construction
+    # since VB1 is an MV (already reduced to 1 cp per FE by the framework).
     NF = pyo.value(m.NF)
 
-    def V1_below_feed_rule(m, k, t):
-        if 1 <= k <= NF - 1:
-            return m.V1[k, t] == m.VB1[t]
-        return pyo.Constraint.Skip
-
-    def V1_above_feed_rule(m, k, t):
-        if NF <= k <= 40:
-            return m.V1[k, t] == m.VB1[t] + (1 - m.qF) * m.F
-        return pyo.Constraint.Skip
-
-    m.V1_below_feed = pyo.Constraint(m.tray, m.time, rule=V1_below_feed_rule)
-    m.V1_above_feed = pyo.Constraint(m.tray, m.time, rule=V1_above_feed_rule)
+    m.V1 = {}
+    for t in m.time:
+        for k in range(1, NF):       # 1 .. NF-1: below feed
+            m.V1[k, t] = m.VB1[t]
+        for k in range(NF, 41):      # NF .. 40: above feed (qF=1 → (1-qF)*F = 0)
+            m.V1[k, t] = m.VB1[t] + (1 - m.qF) * m.F
 
     # ---- Liquid Flows Column 1 (Francis weir formula) ----
     m.L1 = {}
@@ -314,13 +306,11 @@ def equations_write(m):
                     (1 - m.x2[k, 1, i] - m.x2[k, 2, i])
                 )
 
-    # ---- Vapor Flows Column 2 (no feed, constant throughout) ----
-    def V2_flow_rule(m, k, t):
-        if 1 <= k <= 40:
-            return m.V2[k, t] == m.VB2[t]
-        return pyo.Constraint.Skip
-
-    m.V2_flow = pyo.Constraint(m.tray, m.time, rule=V2_flow_rule)
+    # ---- Vapor Flows Column 2 (uniform = VB2, no feed vapour, fe-indexed only like AMPL) ----
+    m.V2 = {}
+    for t in m.time:
+        for k in range(1, 41):       # 1 .. 40
+            m.V2[k, t] = m.VB2[t]
 
     # ---- Liquid Flows Column 2 (Francis weir formula) ----
     m.L2 = {}
@@ -414,22 +404,18 @@ def equations_write(m):
         m.time, rule=lambda m, t: m.xC[t] >= m.setpoints['xC'] - m.xC_eps[t]
     )
 
-    # Holdup lower bounds (soft) — mirrors AMPL M1lower/M2lower
+    # Holdup soft bounds — uniform 0.25/0.75 for all trays, matching AMPL M1lower/M1upper
     def M1_lower_rule(m, k, t):
-        lb = 0.5 if k == 1 else 0.25
-        return m.M1[k, t] >= lb - m.M1_eps[k, t]
+        return m.M1[k, t] >= 0.25 - m.M1_eps[k, t]
 
     def M1_upper_rule(m, k, t):
-        ub = 2.0 if k == 1 else 0.75
-        return m.M1[k, t] <= ub + m.M1_eps[k, t]
+        return m.M1[k, t] <= 0.75 + m.M1_eps[k, t]
 
     def M2_lower_rule(m, k, t):
-        lb = 0.5 if k == 1 else 0.25
-        return m.M2[k, t] >= lb - m.M2_eps[k, t]
+        return m.M2[k, t] >= 0.25 - m.M2_eps[k, t]
 
     def M2_upper_rule(m, k, t):
-        ub = 2.0 if k == 1 else 0.75
-        return m.M2[k, t] <= ub + m.M2_eps[k, t]
+        return m.M2[k, t] <= 0.75 + m.M2_eps[k, t]
 
     m.M1_lower = pyo.Constraint(m.tray, m.time, rule=M1_lower_rule)
     m.M1_upper = pyo.Constraint(m.tray, m.time, rule=M1_upper_rule)

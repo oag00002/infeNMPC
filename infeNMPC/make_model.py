@@ -124,7 +124,7 @@ def _ipopt_solver():
     solver = pyo.SolverFactory('ipopt')
     solver.options['linear_solver'] = 'ma57'
     solver.options['OF_ma57_automatic_scaling'] = 'yes'
-    solver.options['max_iter'] = 500
+    solver.options['max_iter'] = 6000
     solver.options['halt_on_ampl_error'] = 'yes'
     solver.options['bound_relax_factor'] = 0
     return solver
@@ -171,7 +171,7 @@ def _make_steady_state_model(m, options):
     return m
 
 
-def _solve_steady_state_model(m, target, options):
+def _solve_steady_state_model(m, target, options, label="ss"):
     """
     Solve the steady-state model and return data at the initial time point.
 
@@ -184,6 +184,9 @@ def _solve_steady_state_model(m, target, options):
     m : pyo.ConcreteModel
     target : ScalarData or None
     options : Options
+    label : str
+        Short name used as the stem of the debug output file
+        (e.g. ``"ss"`` → ``ss_model_output.txt``).
 
     Returns
     -------
@@ -206,6 +209,10 @@ def _solve_steady_state_model(m, target, options):
         m.target_set = var_set
         m.tracking_cost = tr_cost
         m.objective = pyo.Objective(expr=sum(m.tracking_cost[:, 0]))
+
+    if options.debug_flag:
+        with open(f"{label}_model_output.txt", "w") as f:
+            m.pprint(ostream=f)
 
     solver = _ipopt_solver()
     results = solver.solve(m, tee=options.tee_flag)
@@ -246,7 +253,7 @@ def _make_infinite_horizon_model(m, options):
     })
 
     print('Solving Steady State Model')
-    steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options)
+    steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options, label="ss")
 
     steady_state_values = {
         **{cv: steady_state_data.get_data_from_key(_get_variable_key_for_data(m_ss, cv))
@@ -261,18 +268,12 @@ def _make_infinite_horizon_model(m, options):
     m_iv = _make_steady_state_model(m_iv, options)
 
     initial_value_vars = list(m_iv.initial_values.index_set())
-    if all(var in m_iv.CV_index for var in initial_value_vars):
-        initial_data = ScalarData({
-            _get_variable_key_for_data(m_iv, cv): pyo.value(m_iv.initial_values[cv])
-            for cv in initial_value_vars
-        })
-    else:
-        m_iv_target = ScalarData({
-            _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
-            for var in initial_value_vars
-        })
-        print('Solving Initial Value Model')
-        initial_data = _solve_steady_state_model(m_iv, m_iv_target, options)
+    m_iv_target = ScalarData({
+        _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
+        for var in initial_value_vars
+    })
+    print('Solving Initial Value Model')
+    initial_data = _solve_steady_state_model(m_iv, m_iv_target, options, label="iv")
 
     print('Writing Infinite Horizon Model')
 
@@ -340,7 +341,7 @@ def _make_finite_horizon_model(m, options):
         for var in m_ss.setpoints.index_set()
     })
 
-    steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options)
+    steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options, label="ss")
 
     steady_state_values = {
         **{cv: steady_state_data.get_data_from_key(_get_variable_key_for_data(m_ss, cv))
@@ -353,17 +354,12 @@ def _make_finite_horizon_model(m, options):
     m_iv = _make_steady_state_model(m_iv, options)
 
     initial_value_vars = list(m_iv.initial_values.index_set())
-    if all(var in m_iv.CV_index for var in initial_value_vars):
-        initial_data = ScalarData({
-            _get_variable_key_for_data(m_iv, cv): pyo.value(m_iv.initial_values[cv])
-            for cv in initial_value_vars
-        })
-    else:
-        m_iv_target = ScalarData({
-            _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
-            for var in initial_value_vars
-        })
-        initial_data = _solve_steady_state_model(m_iv, m_iv_target, options)
+    m_iv_target = ScalarData({
+        _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
+        for var in initial_value_vars
+    })
+    print('Solving Initial Value Model')
+    initial_data = _solve_steady_state_model(m_iv, m_iv_target, options, label="iv")
 
     print('Writing Finite Horizon Model')
 
