@@ -27,12 +27,8 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local task notes
-NEXT_TASKS_README.md
-
-# Assignment submission documents (not part of the codebase)
-project1_submission.md
-project1_submission.pdf
+# Research/archive files (not part of the codebase)
+research_files/
 
 # Distribution / packaging
 dist/
