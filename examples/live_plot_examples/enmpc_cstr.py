@@ -34,7 +34,7 @@ options = Options.for_model_module(
     ncp_infinite=1,
     # ---- Controller settings ----
     infinite_horizon=True,
-    endpoint_constraints=False,
+    terminal_constraint_type='none',
     custom_objective=True,
     # ---- Cost function ----
     stage_cost_weights=[1, 1, 1 / 600],

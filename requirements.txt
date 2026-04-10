@@ -1,0 +1,28 @@
+# =============================================================================
+# infeNMPC — environment setup
+# =============================================================================
+#
+# STEP 1 — conda prerequisites (must be done before pip install):
+#
+#   conda install -c conda-forge idaes-pse tqdm
+#   idaes get-extensions          # downloads IPOPT + MA57 and other solvers
+#
+# STEP 2 — pip install this file:
+#
+#   pip install -r requirements.txt
+#
+# NOTE: pyomo MUST come from the forked branch below, NOT from conda-forge or
+# PyPI.  The fork contains DAE/collocation patches required by this project
+# (clean_model='delete' support).  If you need a specific branch, append
+# @branch-name to the URL, e.g.:
+#   git+https://github.com/oag00002/pyomo.git@dae-rewrite
+# =============================================================================
+
+# Pyomo — install from fork (overrides any conda-installed version)
+pyomo @ git+https://github.com/oag00002/pyomo.git@mpc-rewrite
+
+# idaes-pse and tqdm are installed via conda (see Step 1 above).
+# Listed here so pip-only environments still get them, but prefer the
+# conda-forge route for a correctly linked IPOPT build.
+idaes-pse
+tqdm

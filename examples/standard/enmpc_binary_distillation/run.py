@@ -36,7 +36,7 @@ options = Options.for_model_module(
     ncp_infinite=3,
     # ---- Controller settings ----
     infinite_horizon=True,
-    endpoint_constraints=True,
+    terminal_constraint_type='hard',
     custom_objective=True,
     input_suppression=True,
     input_suppression_factor=0.5e5,

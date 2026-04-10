@@ -37,7 +37,7 @@ options = Options.for_model_module(
     nfe_infinite=3,
     ncp_infinite=3,
     # ---- Controller settings ----
-    endpoint_constraints=True,
+    terminal_constraint_type='hard',
     custom_objective=True,
     terminal_cost_riemann=False,
     initialize_with_initial_data=False,

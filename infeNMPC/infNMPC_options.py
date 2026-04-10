@@ -37,9 +37,32 @@ class Options:
         Number of collocation points per infinite-horizon finite element.
     tee_flag : bool
         If True, print IPOPT output to the console.
-    endpoint_constraints : bool
-        If True, enforce a terminal state equality constraint at t=1 on the
-        infinite-horizon block.
+    terminal_constraint_type : str
+        Controls how the terminal state constraint is enforced.
+
+        * ``'hard'`` — add equality constraints pinning each selected variable
+          to its steady-state value at the terminal time.  For the infinite-
+          horizon block this uses Lagrange extrapolation to τ=1 for algebraic
+          variables (CVs without a ``DerivativeVar``, and all MVs), and direct
+          access at τ=1 for differential state CVs.  For the finite-horizon
+          block the last RADAU collocation point (= the FE right endpoint) is
+          used directly.
+        * ``'soft'`` — add a quadratic penalty term to the objective.  The
+          per-variable weights come from ``stage_cost_weights``; an additional
+          scalar ``terminal_soft_weight`` scales the total penalty.
+        * ``'none'`` — no terminal constraint.
+
+        Default: ``'hard'``.
+    terminal_constraint_variables : str
+        Which variables are included in the terminal constraint.
+
+        * ``'cv'``   — ``CV_index`` only.
+        * ``'mv'``   — ``MV_index`` only.
+        * ``'cvmv'`` — both (default).
+    terminal_soft_weight : float
+        Scalar multiplier applied to the terminal soft-constraint penalty.
+        Per-variable weights still come from ``stage_cost_weights``.
+        Only used when ``terminal_constraint_type='soft'``.  Default: ``1.0``.
     custom_objective : bool
         If True, use the model's ``custom_objective`` economic stage cost.
     terminal_cost_riemann : bool
@@ -109,7 +132,9 @@ class Options:
 
     # Solver and model options
     tee_flag: bool = False
-    endpoint_constraints: bool = True
+    terminal_constraint_type: str = 'hard'
+    terminal_constraint_variables: str = 'cvmv'
+    terminal_soft_weight: float = 1.0
     custom_objective: bool = True
     initialize_with_initial_data: bool = False
     terminal_cost_riemann: bool = False
