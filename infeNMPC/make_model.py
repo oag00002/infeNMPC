@@ -27,6 +27,7 @@ from .tools.indexing_tools import (
     _get_derivative_and_state_vars,
 )
 from .tools.collocation_tools import _compute_gamma_from_collocation
+from .tools.initialization_tools import _check_ic_consistency, _build_ic_data
 
 
 def _fix_initial_conditions_at_t0(block):
@@ -130,7 +131,7 @@ def _ipopt_solver():
     return solver
 
 
-def _make_steady_state_model(m, options):
+def _make_steady_state_model(m, options, fix_slacks=True):
     """
     Generate a steady-state model by fixing all derivatives to zero.
 
@@ -142,6 +143,10 @@ def _make_steady_state_model(m, options):
     ----------
     m : pyo.ConcreteModel
     options : Options
+    fix_slacks : bool, optional
+        If True (default) and the model declares ``m.slack_index``, fix all
+        slack variables to 0 before solving.  Set to False for the IV solve
+        so that the initial point is allowed to violate soft constraints.
 
     Returns
     -------
@@ -151,6 +156,13 @@ def _make_steady_state_model(m, options):
 
     m.time = ContinuousSet(bounds=(0, 1))
     m = _model.variables_initialize(m)
+
+    if fix_slacks and hasattr(m, 'slack_index'):
+        for sv_name in m.slack_index:
+            sv_var = getattr(m, sv_name, None)
+            if sv_var is not None and isinstance(sv_var, pyo.Var):
+                for idx in sv_var.index_set():
+                    sv_var[idx].fix(0)
 
     deriv_vars, state_vars = _get_derivative_and_state_vars(m)
 
@@ -262,18 +274,8 @@ def _make_infinite_horizon_model(m, options):
            for mv in m_ss.MV_index},
     }
 
-    # --- Initial condition solve ---
-    print('Writing Initial Value Model')
-    m_iv = pyo.ConcreteModel()
-    m_iv = _make_steady_state_model(m_iv, options)
-
-    initial_value_vars = list(m_iv.initial_values.index_set())
-    m_iv_target = ScalarData({
-        _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
-        for var in initial_value_vars
-    })
-    print('Solving Initial Value Model')
-    initial_data = _solve_steady_state_model(m_iv, m_iv_target, options, label="iv")
+    # --- Initial condition data ---
+    initial_data = _build_ic_data(options)
 
     print('Writing Infinite Horizon Model')
 
@@ -316,6 +318,7 @@ def _make_infinite_horizon_model(m, options):
         m.interface.load_data(initial_data, time_points=0)
 
     _fix_initial_conditions_at_t0(m.finite_block)
+    _check_ic_consistency(m.finite_block)
 
     return m
 
@@ -350,16 +353,7 @@ def _make_finite_horizon_model(m, options):
            for mv in m_ss.MV_index},
     }
 
-    m_iv = pyo.ConcreteModel()
-    m_iv = _make_steady_state_model(m_iv, options)
-
-    initial_value_vars = list(m_iv.initial_values.index_set())
-    m_iv_target = ScalarData({
-        _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
-        for var in initial_value_vars
-    })
-    print('Solving Initial Value Model')
-    initial_data = _solve_steady_state_model(m_iv, m_iv_target, options, label="iv")
+    initial_data = _build_ic_data(options)
 
     print('Writing Finite Horizon Model')
 
@@ -387,6 +381,7 @@ def _make_finite_horizon_model(m, options):
         m.interface.load_data(initial_data, time_points=t_first)
 
     _fix_initial_conditions_at_t0(m)
+    _check_ic_consistency(m)
 
     return m
 

@@ -105,6 +105,7 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `disturb_distribution` | `'normal'` | Disturbance distribution type |
 | `disturb_seeded` | `True` | Use fixed random seed |
 | `debug_flag` | `False` | Print most-violated constraints after every controller solve and on failures |
+| `dynamic_initial_conditions` | `False` | Use dynamic IC path (fix state vars to `initialize=` values, solve for algebraic vars only) instead of SS-NLP |
 
 ---
 
@@ -173,6 +174,32 @@ When a CV is an algebraic variable (no DerivativeVar), the framework uses `_fix_
 The steady-state warm-start in `_make_finite_horizon_model` skips `t=0` so that `initialize=...` values are preserved there for non-CV state vars.
 
 The infinite-horizon `endpoint_state_constraints` already handles algebraic CVs generically (`CV[τ=1] == setpoint` for all CVs in `CV_index`, regardless of type).
+
+### IC Consistency Check
+
+After `_fix_initial_conditions_at_t0` fixes all state variables, `_check_ic_consistency(block, tol=1e-4)` (in `tools/initialization_tools.py`) evaluates every active equality constraint at t=0 (skipping `_disc_eq` constraints, which are collocation bookkeeping). If any residual exceeds `tol`, it raises `RuntimeError` listing the top 5 violations by magnitude. This fires automatically at the end of both `_make_finite_horizon_model` and `_make_infinite_horizon_model`.
+
+### IC Builder Functions (`tools/initialization_tools.py`)
+
+The IC data that gets loaded at t=0 is produced by one of two paths, routed by `_build_ic_data(options)`:
+
+**Default path — `_build_ic_data_steady_state(options)`** (`dynamic_initial_conditions=False`):
+- Builds the SS NLP model with `fix_slacks=False` (slacks free, so specs can be violated at the start)
+- Solves toward `initial_values` targets
+- Returns `ScalarData` with consistent values for all variables at t=0
+- On IPOPT failure: raises with a readable message explaining that `initial_values` may be infeasible
+
+**Dynamic path — `_build_ic_data_dynamic(options)`** (`dynamic_initial_conditions=True`):
+- Builds a model with nfe=1, ncp=1 but deactivates `disc_eq` instead of fixing derivatives to zero — derivatives become free variables determined by the ODE constraints (allowing non-steady-state starting points)
+- Applies scalar overrides from `initial_values` to specific state variables
+- Fixes all differential state vars at t=0 to their current Pyomo `initialize=` values (set per-index in `variables_initialize`; works for indexed vars like distillation trays)
+- Fixes MVs at their `initialize=` values to prevent an underdetermined system
+- Solves the resulting feasibility problem for algebraic vars and free derivatives
+- On IPOPT failure: calls `_report_constraint_violations` and raises with a clear message
+
+### Slack Variable Squareness Fix
+
+`_make_steady_state_model(m, options, fix_slacks=True)` gains a `fix_slacks` parameter. When `True` (the default, used for the setpoint SS solve), all variables named in `m.slack_index` are fixed to 0 after `variables_initialize`, making the NLP square. The IV path calls it with `fix_slacks=False` so that infeasible-by-spec starting points are still reachable.
 
 ### Important: `m.time` is injected by the framework
 
@@ -605,10 +632,11 @@ This model uses **algebraic CVs** (`xD1A`, `xD2B`, `xC` are computed from tray c
 
 ---
 
-## Known Issues / State at Last Review (2026-04-07)
+## Known Issues / State at Last Review (2026-04-09)
 
-- Branch: `add-double-column-clean`
+- Branch: `fix-terminal-constraints`
 - Most examples are not confirmed working; the CSTR lyap_flag example is the primary test case
 - `model_output.txt` is written to the working directory **twice**: at controller construction time (`controllers.py`) and again at iteration 10 in `run_MPC.py:122–124` (the latter overwrites it). Both are debug behavior.
 - `gamma` in the results folder path reflects `options.gamma` (which stays `None` until the block stores it on `infinite_block.gamma` — the folder path may show `gamma_None` even after auto-computation)
 - The ternary distillation example is still being tested/developed; `lyap_flag=False` by default
+- **IC framework added (2026-04-09):** `_make_steady_state_model` has `fix_slacks=True` param; `_check_ic_consistency`, `_build_ic_data_steady_state`, `_build_ic_data_dynamic`, `_build_ic_data` added to `tools/initialization_tools.py`; `dynamic_initial_conditions` option added. See LLMJOURNAL.md for full details.

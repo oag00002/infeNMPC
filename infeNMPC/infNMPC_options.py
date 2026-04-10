@@ -81,6 +81,13 @@ class Options:
     debug_flag : bool
         If True, print the most violated constraints after every controller
         solve (and before re-raising on solver failure).
+    dynamic_initial_conditions : bool
+        If True, use the dynamic IC path: state variables are fixed to their
+        ``initialize=`` values (with optional scalar overrides from
+        ``initial_values``), and IPOPT solves only for algebraic variables and
+        free derivatives. Derivatives are NOT fixed to zero, allowing the
+        starting point to be off steady-state. If False (default), the existing
+        steady-state NLP toward ``initial_values`` is used.
     """
 
     # Model selection
@@ -134,6 +141,9 @@ class Options:
 
     # Debugging
     debug_flag: bool = False
+
+    # Initial condition mode
+    dynamic_initial_conditions: bool = False
 
     def copy(self, **overrides) -> 'Options':
         """Return a shallow copy of this Options with selected fields overridden."""
