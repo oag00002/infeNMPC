@@ -33,11 +33,11 @@ options = Options.for_model_module(
     nfe_finite=3,
     ncp_finite=3,
     # ---- Infinite-horizon discretization ----
-    infinite_horizon=True,
+    infinite_horizon=False,
     nfe_infinite=3,
     ncp_infinite=3,
     # ---- Controller settings ----
-    endpoint_constraints=True,
+    terminal_constraint_type='none',
     custom_objective=True,
     terminal_cost_riemann=False,
     initialize_with_initial_data=False,

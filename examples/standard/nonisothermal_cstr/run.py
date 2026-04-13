@@ -34,7 +34,7 @@ options = Options.for_model_module(
     ncp_infinite=3,
     # ---- Controller settings ----
     infinite_horizon=True,
-    endpoint_constraints=True,
+    terminal_constraint_type='hard',
     custom_objective=False,
     initialize_with_initial_data=True,
     # ---- Cost function ----
