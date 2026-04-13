@@ -488,7 +488,7 @@ def custom_objective(m, options):
 #         'nfe_infinite': 3,
 #         'ncp_infinite': 3,
 #         'tee_flag': True,
-#         'endpoint_constraints': True,
+#         'terminal_constraint_type': 'hard',
 #         'custom_objective': True,
 #         'input_suppression': True,
 #         'input_suppression_factor': 1.0e3,

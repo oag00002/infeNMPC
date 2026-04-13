@@ -1,5 +1,91 @@
 # Next Tasks
 
+## Terminal Constraint Overhaul (2026-04-10)
+
+**Branch:** `fix-terminal-constraints-2`
+
+Replaced the old `endpoint_constraints: bool` option with a proper terminal constraint framework
+covering all four combinations of horizon type × constraint style.
+
+---
+
+### Motivation
+
+The old `endpoint_constraints=True` had several correctness and completeness gaps:
+
+1. **Wrong physics for algebraic CVs/MVs.** With LAGRANGE-LEGENDRE collocation, τ=1 is not a
+   quadrature point. Differential state variables are pinned at τ=1 by Pyomo's internal
+   continuity equations. Algebraic variables (CVs without a `DerivativeVar`, and all MVs) have
+   no such equation — their τ=1 index is a free variable with no governing constraint. The old
+   code added `xD1A[1] == ss_val` directly, which constrained a free variable that had no
+   connection to the actual physics at the collocation points.
+2. **MVs were never constrained** at the terminal time.
+3. **No soft-constraint option** (penalty-only alternative).
+4. **No terminal constraints in finite-horizon controllers** at all.
+
+---
+
+### New Options (`infNMPC_options.py`)
+
+`endpoint_constraints: bool` removed. Three new fields added:
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `terminal_constraint_type` | `'hard'` | `'hard'` = equality; `'soft'` = penalty; `'none'` = off |
+| `terminal_constraint_variables` | `'cvmv'` | `'cv'`, `'mv'`, or `'cvmv'` |
+| `terminal_soft_weight` | `1.0` | Scalar multiplier on soft penalty (per-var weights from `stage_cost_weights`) |
+
+All ~10 example `run.py` files updated: `endpoint_constraints=True` → `terminal_constraint_type='hard'`,
+`endpoint_constraints=False` → `terminal_constraint_type='none'`.
+
+---
+
+### Polynomial Extrapolation for Algebraic Variables
+
+For the infinite-horizon block, algebraic CVs and all MVs require Lagrange interpolation to
+compute the terminal value:
+
+```
+var_terminal ≈ Σ_j  L_j(1) · var[τ_j]
+```
+
+where `τ_j` are the collocation points in the last finite element, and `L_j(1)` are the Lagrange
+basis polynomials evaluated at 1 (pure numerical scalars, computed once).
+
+Two helpers added to `tools/collocation_tools.py`:
+
+- `_get_last_fe_pts(block)` — returns sorted collocation points strictly inside the last FE
+- `_lagrange_coeffs_at_endpoint(colloc_pts, t_end)` — computes `L_j(t_end)` for each point
+
+---
+
+### Implementation Details
+
+**`make_model.py`** — two module-level helpers added:
+- `_terminal_vars(m, options)` — builds the list of variable names to constrain based on
+  `terminal_constraint_variables`
+- `_terminal_weights(options, var_names, stage_cost_index)` — maps each variable to its weight
+  from `stage_cost_weights` by position in `stage_cost_index`
+
+**`_finite_block_gen`** — terminal constraint block added after `equations_write`, guarded by
+`not options.infinite_horizon` (so it fires only for pure finite-horizon controllers, not when
+the finite block is embedded inside an infinite-horizon model). RADAU collocation includes
+the right FE endpoint, so `m.time.last()` is a valid collocation point for all variables.
+- `'hard'` → `m.finite_terminal_constraints` (one equality per variable)
+- `'soft'` → `m.finite_terminal_soft_penalty` Expression (quadratic penalty sum)
+
+**`_infinite_block_gen`** — `endpoint_state_constraints` block replaced. Variables are split into:
+- **Differential CVs** (`var in state_vars`) → `m.diff_terminal_constraints`: direct equality
+  `CV[τ=1] == ss_val` (Pyomo continuity equations already pin this value)
+- **Algebraic CVs / MVs** (`var not in state_vars`) → `m.alg_terminal_constraints`: equality
+  on the Lagrange extrapolation expression
+- For `'soft'`: `m.infinite_terminal_soft_penalty` Expression built from the same extrapolation
+  logic; no equality constraints added
+
+**`controllers.py`** — all three infinite-horizon objective branches and both finite-horizon
+branches add `*_terminal_soft_penalty * terminal_soft_weight` to their return value when
+`terminal_constraint_type='soft'`.
+
 ## ~~Fix phi_track in the finite horizon block~~ (Done)
 
 **Done.** `phi_track` in the finite block is now a scalar `pyo.Expression` (Riemann sum over

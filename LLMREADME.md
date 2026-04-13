@@ -85,7 +85,9 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `nfe_infinite` | `3` | Finite elements in infinite-horizon block |
 | `ncp_infinite` | `3` | Collocation points per element (infinite block) |
 | `custom_objective` | `True` | Use model's `custom_objective()` economic cost |
-| `endpoint_constraints` | `True` | Enforce `CV[τ=1] == setpoint` in infinite block |
+| `terminal_constraint_type` | `'hard'` | `'hard'` = equality at terminal time; `'soft'` = quadratic penalty; `'none'` = disabled |
+| `terminal_constraint_variables` | `'cvmv'` | Which variables to constrain: `'cv'`, `'mv'`, or `'cvmv'` |
+| `terminal_soft_weight` | `1.0` | Scalar multiplier on soft-constraint penalty (per-var weights from `stage_cost_weights`) |
 | `terminal_cost_riemann` | `False` | Riemann-sum approximation of terminal cost |
 | `stage_cost_weights` | `[1,1,1/600]` | Per-variable weights for quadratic tracking cost |
 | `gamma` | `None` | Time-compression param; **auto-computed if None** |
@@ -295,7 +297,7 @@ This is the most complex file. It builds Pyomo models in stages.
   - `phi[0].fix(0)`; `terminal_cost` constraint defines the ODE dynamics
   - `phi_track`: quadratic tracking Lyapunov integral (ODE `dphidt_track`)
   - `phi_track[0].fix(0)`; `phi_track_ode` defines its dynamics (starts at 0, independent of finite block)
-  - `endpoint_state_constraints`: if `endpoint_constraints=True`, `CV[τ=1] == setpoint`
+  - Terminal constraints (when `terminal_constraint_type != 'none'`): `diff_terminal_constraints` for differential CVs (direct τ=1 access); `alg_terminal_constraints` for algebraic CVs/MVs (Lagrange extrapolation to τ=1). For `'soft'`, an `infinite_terminal_soft_penalty` Expression is built instead and added to the objective by the controller.
 - **Derivative transformation** (`_transform_model_derivatives`): Replaces all `dxdt[t]` in user constraints with `(gamma/sampling_time * (1 - t²)) * dxdt[t]`. Skips `*_disc_eq`, `terminal_cost`, and `phi_track_ode` constraints.
 
 ### Infinite-Horizon Lyapunov Constraint (top-level model, set in `_make_infinite_horizon_model`)
@@ -556,7 +558,7 @@ solver.options['bound_relax_factor'] = 0
 
 ## Pyomo/IDAES Conventions
 
-- **`clean_model='delete'`**: Passed to `dae.collocation.apply_to()`. Removes non-collocation variable/constraint entries after discretization. Requires IDAES-patched Pyomo (`pyomo-dae dae-rewrite` branch).
+- **`clean_model='delete'`**: Passed to `dae.collocation.apply_to()`. Removes non-collocation variable/constraint entries after discretization. Requires forked Pyomo (`oag00002/pyomo`, branch `mpc-rewrite`).
 - **`DynamicModelInterface(..., clean_model=True)`**: Uses sparse data-access paths for compatibility with `clean_model='delete'`.
 - **Discretization scheme**:
   - Finite block → `LAGRANGE-RADAU`
@@ -586,7 +588,7 @@ run.py:
     num_horizons=100, sampling_time=1,
     nfe_finite=2, ncp_finite=1,
     nfe_infinite=5, ncp_infinite=1,
-    infinite_horizon=True, endpoint_constraints=False,
+    infinite_horizon=True, terminal_constraint_type='none',
     custom_objective=True,
     stage_cost_weights=[1, 1, 1/600], beta=1,
     lyap_flag=True, lyap_delta=0.01,

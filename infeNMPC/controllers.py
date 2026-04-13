@@ -72,6 +72,8 @@ class InfiniteHorizonController(Controller):
         )
 
         # ---- Objective ----
+        _use_soft_tc = options.terminal_constraint_type == 'soft'
+
         if options.custom_objective:
             custom_objective = _get_model(options).custom_objective
             cost_fn = custom_objective(m.finite_block, options)
@@ -87,7 +89,11 @@ class InfiniteHorizonController(Controller):
                     m.infinite_block.phi[m.infinite_block.time.last()]
                     * options.beta / options.sampling_time
                 )
-                return stage_cost + terminal_cost
+                obj = stage_cost + terminal_cost
+                if _use_soft_tc:
+                    obj = obj + (m.infinite_block.infinite_terminal_soft_penalty
+                                 * options.terminal_soft_weight)
+                return obj
 
             m.lyapunov = pyo.Expression(
                 expr=m.infinite_block.phi_track[m.infinite_block.time.last()]
@@ -127,7 +133,11 @@ class InfiniteHorizonController(Controller):
                         )
                         tau_prev = tau
 
-                return stage_cost + obj_infinite * options.beta / options.sampling_time
+                obj = stage_cost + obj_infinite * options.beta / options.sampling_time
+                if _use_soft_tc:
+                    obj = obj + (m.infinite_block.infinite_terminal_soft_penalty
+                                 * options.terminal_soft_weight)
+                return obj
 
         else:
             def objective_rule(m):
@@ -170,8 +180,11 @@ class InfiniteHorizonController(Controller):
                     m.infinite_block.phi[m.infinite_block.time.last()]
                     * options.beta / options.sampling_time
                 )
-
-                return stage_cost + terminal_cost
+                obj = stage_cost + terminal_cost
+                if _use_soft_tc:
+                    obj = obj + (m.infinite_block.infinite_terminal_soft_penalty
+                                 * options.terminal_soft_weight)
+                return obj
 
             m.lyapunov = pyo.Expression(
                 expr=m.infinite_block.phi_track[m.infinite_block.time.last()]
@@ -182,7 +195,13 @@ class InfiniteHorizonController(Controller):
 
         self._model = m
 
-        with open("model_output.txt", "w") as f:
+        if options.model_output_dir:
+            import os
+            os.makedirs(options.model_output_dir, exist_ok=True)
+            out_path = os.path.join(options.model_output_dir, "controller_model.txt")
+        else:
+            out_path = "model_output.txt"
+        with open(out_path, "w") as f:
             m.pprint(ostream=f)
 
         print('Infinite Horizon Controller Initial Solve')
@@ -223,6 +242,8 @@ class FiniteHorizonController(Controller):
         )
 
         # ---- Objective ----
+        _use_soft_tc = options.terminal_constraint_type == 'soft'
+
         if options.custom_objective:
             custom_objective = _get_model(options).custom_objective
             cost_fn = custom_objective(m, options)
@@ -234,6 +255,10 @@ class FiniteHorizonController(Controller):
                     for t in finite_elements
                     if t != m.time.first()
                 )
+                if _use_soft_tc:
+                    stage_cost = (stage_cost
+                                  + m.finite_terminal_soft_penalty
+                                  * options.terminal_soft_weight)
                 return stage_cost
 
         else:
@@ -263,13 +288,23 @@ class FiniteHorizonController(Controller):
                                 )
                                 stage_cost += options.input_suppression_factor * mv_expr ** 2
 
+                if _use_soft_tc:
+                    stage_cost = (stage_cost
+                                  + m.finite_terminal_soft_penalty
+                                  * options.terminal_soft_weight)
                 return stage_cost
 
         m.objective = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
 
         self._model = m
 
-        with open("model_output.txt", "w") as f:
+        if options.model_output_dir:
+            import os
+            os.makedirs(options.model_output_dir, exist_ok=True)
+            out_path = os.path.join(options.model_output_dir, "controller_model.txt")
+        else:
+            out_path = "model_output.txt"
+        with open(out_path, "w") as f:
             m.pprint(ostream=f)
 
         print('Finite Horizon Controller Initial Solve')

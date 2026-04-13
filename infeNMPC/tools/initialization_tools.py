@@ -1,12 +1,11 @@
 """
 Progressive sampling-time warm-start utilities for robust controller initialisation.
 """
-from ..controllers import InfiniteHorizonController, FiniteHorizonController
 from ..infNMPC_options import Options
 from pyomo.contrib.mpc.data.series_data import TimeSeriesData
 
 
-def _assist_initialization_infinite(options: Options) -> InfiniteHorizonController:
+def _assist_initialization_infinite(options: Options):
     """
     Warm-start an infinite-horizon controller via progressive sampling-time reduction.
 
@@ -27,6 +26,8 @@ def _assist_initialization_infinite(options: Options) -> InfiniteHorizonControll
     InfiniteHorizonController
         The solved controller at the target sampling time.
     """
+    from ..controllers import InfiniteHorizonController
+
     print("Using initialization assist for infinite horizon controller.")
 
     modified_options = options.copy(
@@ -83,7 +84,7 @@ def _assist_initialization_infinite(options: Options) -> InfiniteHorizonControll
     return controller
 
 
-def _assist_initialization_finite(options: Options) -> FiniteHorizonController:
+def _assist_initialization_finite(options: Options):
     """
     Warm-start a finite-horizon controller via progressive sampling-time reduction.
 
@@ -100,6 +101,8 @@ def _assist_initialization_finite(options: Options) -> FiniteHorizonController:
     FiniteHorizonController
         The solved controller at the target sampling time.
     """
+    from ..controllers import FiniteHorizonController
+
     print("Using initialization assist for finite horizon controller.")
 
     modified_options = options.copy(
@@ -340,8 +343,10 @@ def _build_ic_data_dynamic(options):
     # Feasibility objective — IPOPT solves for algebraic vars and free derivatives
     m_iv.objective = pyo.Objective(expr=0)
 
-    if options.debug_flag:
-        with open("dynamic_ic_model_output.txt", "w") as f:
+    if options.model_output_dir:
+        import os
+        os.makedirs(options.model_output_dir, exist_ok=True)
+        with open(os.path.join(options.model_output_dir, "dynamic_ic_model.txt"), "w") as f:
             m_iv.pprint(ostream=f)
 
     solver = _ipopt_solver()

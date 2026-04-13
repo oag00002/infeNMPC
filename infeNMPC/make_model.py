@@ -7,7 +7,7 @@ are loaded via ``_get_model(options)``, which resolves ``options.model_module``
 directly (primary) or falls back to ``_load_model`` by name (legacy).
 
 Non-collocation cleanup is handled by passing ``clean_model='delete'`` to
-``dae.collocation.apply_to`` (requires the pyomo-dae ``dae-rewrite`` branch).
+``dae.collocation.apply_to`` (requires ``oag00002/pyomo`` branch ``mpc-rewrite``).
 ``DynamicModelInterface`` is created with ``clean_model=True`` so that all
 MPC data-access operations use the safe sparse-access paths from
 ``contrib.mpc.interfaces.*_clean``.
@@ -26,8 +26,66 @@ from .tools.indexing_tools import (
     _add_time_indexed_expression,
     _get_derivative_and_state_vars,
 )
-from .tools.collocation_tools import _compute_gamma_from_collocation
+from .tools.collocation_tools import (
+    _compute_gamma_from_collocation,
+    _get_last_fe_pts,
+    _lagrange_coeffs_at_endpoint,
+)
 from .tools.initialization_tools import _check_ic_consistency, _build_ic_data
+
+
+# ---------------------------------------------------------------------------
+# Terminal-constraint helpers
+# ---------------------------------------------------------------------------
+
+def _terminal_vars(m, options):
+    """
+    Return an ordered list of variable names to include in the terminal
+    constraint, based on ``options.terminal_constraint_variables``.
+
+    Parameters
+    ----------
+    m : pyo.Block
+        Block that has ``CV_index`` and ``MV_index``.
+    options : Options
+
+    Returns
+    -------
+    list of str
+    """
+    tvars = options.terminal_constraint_variables
+    result = []
+    if 'cv' in tvars:
+        result += list(m.CV_index)
+    if 'mv' in tvars:
+        result += list(m.MV_index)
+    return result
+
+
+def _terminal_weights(options, var_names, stage_cost_index):
+    """
+    Return per-variable weights for the terminal constraint penalty.
+
+    Weights come from ``options.stage_cost_weights``, indexed by each
+    variable's position in *stage_cost_index* (the same ordering used for the
+    stage cost).  Variables not found in *stage_cost_index* get weight 1.0.
+
+    Parameters
+    ----------
+    options : Options
+    var_names : list of str
+    stage_cost_index : list of str
+        Ordered list ``[cv0, cv1, ..., mv0, mv1, ...]`` matching the stage
+        cost weight ordering.
+
+    Returns
+    -------
+    list of float
+    """
+    c = options.stage_cost_weights or []
+    pos = {v: i for i, v in enumerate(stage_cost_index)}
+    return [c[pos[v]] if v in pos and pos[v] < len(c) else 1.0
+            for v in var_names]
 
 
 def _fix_initial_conditions_at_t0(block):
@@ -122,12 +180,14 @@ def _check_optimal(results, label=""):
 
 def _ipopt_solver():
     """Return a pre-configured IPOPT solver instance."""
-    solver = pyo.SolverFactory('ipopt')
+    solver = pyo.SolverFactory('ipopt_v2')
     solver.options['linear_solver'] = 'ma57'
     solver.options['OF_ma57_automatic_scaling'] = 'yes'
     solver.options['max_iter'] = 6000
     solver.options['halt_on_ampl_error'] = 'yes'
     solver.options['bound_relax_factor'] = 0
+    # bound push
+    # mu init
     return solver
 
 
@@ -197,8 +257,9 @@ def _solve_steady_state_model(m, target, options, label="ss"):
     target : ScalarData or None
     options : Options
     label : str
-        Short name used as the stem of the debug output file
-        (e.g. ``"ss"`` → ``ss_model_output.txt``).
+        Short name used as the stem of the pprint output file when
+        ``options.model_output_dir`` is set
+        (e.g. ``"ss"`` → ``<model_output_dir>/ss_model.txt``).
 
     Returns
     -------
@@ -222,8 +283,10 @@ def _solve_steady_state_model(m, target, options, label="ss"):
         m.tracking_cost = tr_cost
         m.objective = pyo.Objective(expr=sum(m.tracking_cost[:, 0]))
 
-    if options.debug_flag:
-        with open(f"{label}_model_output.txt", "w") as f:
+    if options.model_output_dir:
+        import os
+        os.makedirs(options.model_output_dir, exist_ok=True)
+        with open(os.path.join(options.model_output_dir, f"{label}_model.txt"), "w") as f:
             m.pprint(ostream=f)
 
     solver = _ipopt_solver()
@@ -467,6 +530,34 @@ def _finite_block_gen(m, options):
                 )
             )
 
+    # --- Terminal constraints (finite-horizon controller only) ---
+    # For infinite-horizon models, the terminal point is τ=1 of the infinite
+    # block, NOT the end of the finite block, so we skip this here.
+    if options.terminal_constraint_type in ('hard', 'soft') and not options.infinite_horizon:
+        stage_cost_index = list(m.CV_index) + list(m.MV_index)
+        vars_tc = _terminal_vars(m, options)
+        weights = _terminal_weights(options, vars_tc, stage_cost_index)
+        t_final = m.time.last()   # RADAU: right-endpoint IS a collocation point
+
+        if options.terminal_constraint_type == 'hard':
+            def _finite_tc_rule(m, var_name):
+                return (
+                    _add_time_indexed_expression(m, var_name, t_final)
+                    == m.steady_state_values[var_name]
+                )
+            m.finite_terminal_constraints = pyo.Constraint(
+                vars_tc, rule=_finite_tc_rule
+            )
+
+        else:  # 'soft'
+            m.finite_terminal_soft_penalty = pyo.Expression(
+                expr=sum(
+                    w * (_add_time_indexed_expression(m, v, t_final)
+                         - m.steady_state_values[v])**2
+                    for v, w in zip(vars_tc, weights)
+                )
+            )
+
     return m
 
 
@@ -521,19 +612,9 @@ def _transform_model_derivatives(model, deriv_vars):
                 new_expr = replace_expressions(expr, substitution_map=replacement_map)
                 con[index].set_value(new_expr)
 
-    # NOTE: t=1 cleanup disabled — phi_track[1] must always exist for the
-    # Lyapunov stability constraint and endpoint_state_constraints.
-    # if not model.endpoint_constraints:
-    #     for comp in model.component_objects(active=True, descend_into=True):
-    #         if not comp.is_indexed():
-    #             continue
-    #         for index in list(comp.keys()):
-    #             time_index = index[-1] if isinstance(index, tuple) else index
-    #             if time_index == 1:
-    #                 try:
-    #                     del comp[index]
-    #                 except (KeyError, AttributeError, TypeError):
-    #                     pass
+    # NOTE: τ=1 entries are intentionally NOT cleaned up here.
+    # phi_track[1] must always exist for the Lyapunov stability constraint,
+    # and differential CVs need their τ=1 value for hard terminal constraints.
 
 
 def _infinite_block_gen(m, options):
@@ -662,20 +743,89 @@ def _infinite_block_gen(m, options):
 
     _model.equations_write(m)
 
-    m.endpoint_constraints = options.endpoint_constraints
+    # --- Terminal constraints for the infinite-horizon block ---
+    #
+    # LEGENDRE collocation places quadrature points strictly inside each
+    # finite element — τ=1 (the global endpoint) is NOT a collocation point.
+    # Pyomo's internal continuity equations DO pin τ=1 for differential state
+    # variables (those with a DerivativeVar) by extrapolating the polynomial
+    # from the last element.  Algebraic variables (CVs without a DerivativeVar
+    # and all MVs) have no such continuity equation, so their τ=1 index is a
+    # genuinely free variable.
+    #
+    # Strategy
+    # --------
+    # • Differential CVs  → direct access at τ=1 (already determined).
+    # • Algebraic CVs/MVs → Lagrange extrapolation from the last FE's
+    #                        collocation points.
+    if options.terminal_constraint_type in ('hard', 'soft'):
+        stage_cost_index = list(m.CV_index) + list(m.MV_index)
+        vars_tc = _terminal_vars(m, options)
+        weights = _terminal_weights(options, vars_tc, stage_cost_index)
 
-    # --- Endpoint state equality constraints (one per CV, replaces aggregate) ---
-    if options.endpoint_constraints:
-        cv_list_ep = list(m.CV_index)
+        # Re-detect state_vars after equations_write (user may add DerivativeVar
+        # inside equations_write; in practice they never do, but be safe).
+        _, state_vars_tc = _get_derivative_and_state_vars(m)
 
-        def _endpoint_state_rule(m, cv):
-            return (
-                _add_time_indexed_expression(m, cv, 1) == m.steady_state_values[cv]
+        def _is_differential(var_name):
+            base = var_name.split('[')[0]
+            return getattr(m, base) in state_vars_tc
+
+        diff_vars = [v for v in vars_tc if _is_differential(v)]
+        alg_vars  = [v for v in vars_tc if not _is_differential(v)]
+
+        # Lagrange coefficients: computed once, reused for all alg. vars.
+        if alg_vars:
+            last_fe_pts = _get_last_fe_pts(m)
+            lag_coeffs  = _lagrange_coeffs_at_endpoint(last_fe_pts, 1.0)
+
+            def _alg_extrap(var_name):
+                """Pyomo expression for the extrapolated terminal value."""
+                return sum(
+                    c * _add_time_indexed_expression(m, var_name, t)
+                    for c, t in zip(lag_coeffs, last_fe_pts)
+                )
+
+        if options.terminal_constraint_type == 'hard':
+            # Differential CVs: τ=1 exists and is pinned by Pyomo continuity.
+            if diff_vars:
+                diff_weights = _terminal_weights(options, diff_vars, stage_cost_index)
+
+                def _diff_tc_rule(m, v):
+                    return (
+                        _add_time_indexed_expression(m, v, 1)
+                        == m.steady_state_values[v]
+                    )
+
+                m.diff_terminal_constraints = pyo.Constraint(
+                    diff_vars, rule=_diff_tc_rule
+                )
+
+            # Algebraic CVs / MVs: polynomial extrapolation to τ=1.
+            if alg_vars:
+                def _alg_tc_rule(m, v):
+                    return _alg_extrap(v) == m.steady_state_values[v]
+
+                m.alg_terminal_constraints = pyo.Constraint(
+                    alg_vars, rule=_alg_tc_rule
+                )
+
+        else:  # 'soft' — build penalty Expression on the block
+            diff_weights = _terminal_weights(options, diff_vars, stage_cost_index)
+            alg_weights  = _terminal_weights(options, alg_vars,  stage_cost_index)
+            penalty_terms = []
+            for v, w in zip(diff_vars, diff_weights):
+                penalty_terms.append(
+                    w * (_add_time_indexed_expression(m, v, 1)
+                         - m.steady_state_values[v])**2
+                )
+            for v, w in zip(alg_vars, alg_weights):
+                penalty_terms.append(
+                    w * (_alg_extrap(v) - m.steady_state_values[v])**2
+                )
+            m.infinite_terminal_soft_penalty = pyo.Expression(
+                expr=sum(penalty_terms) if penalty_terms else pyo.Constant(0)
             )
-
-        m.endpoint_state_constraints = pyo.Constraint(
-            cv_list_ep, rule=_endpoint_state_rule
-        )
 
     _transform_model_derivatives(m, deriv_vars)
 
