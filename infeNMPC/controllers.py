@@ -195,7 +195,13 @@ class InfiniteHorizonController(Controller):
 
         self._model = m
 
-        with open("model_output.txt", "w") as f:
+        if options.model_output_dir:
+            import os
+            os.makedirs(options.model_output_dir, exist_ok=True)
+            out_path = os.path.join(options.model_output_dir, "controller_model.txt")
+        else:
+            out_path = "model_output.txt"
+        with open(out_path, "w") as f:
             m.pprint(ostream=f)
 
         print('Infinite Horizon Controller Initial Solve')
@@ -292,7 +298,13 @@ class FiniteHorizonController(Controller):
 
         self._model = m
 
-        with open("model_output.txt", "w") as f:
+        if options.model_output_dir:
+            import os
+            os.makedirs(options.model_output_dir, exist_ok=True)
+            out_path = os.path.join(options.model_output_dir, "controller_model.txt")
+        else:
+            out_path = "model_output.txt"
+        with open(out_path, "w") as f:
             m.pprint(ostream=f)
 
         print('Finite Horizon Controller Initial Solve')

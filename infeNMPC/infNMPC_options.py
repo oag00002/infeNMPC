@@ -111,6 +111,19 @@ class Options:
         free derivatives. Derivatives are NOT fixed to zero, allowing the
         starting point to be off steady-state. If False (default), the existing
         steady-state NLP toward ``initial_values`` is used.
+    model_output_dir : str or None
+        If set, pprint each intermediate Pyomo model to a ``.txt`` file in
+        this directory.  The following files are written:
+
+        * ``ss_model.txt``      — steady-state setpoint model
+        * ``iv_model.txt``      — initial-condition model
+        * ``controller_model.txt`` — full controller NLP
+        * ``plant_model.txt``   — plant integration model
+        * ``dynamic_ic_model.txt`` — dynamic IC feasibility model (only when
+          ``dynamic_initial_conditions=True``)
+
+        The directory is created automatically if it does not exist.
+        If ``None`` (default), no pprint files are written.
     """
 
     # Model selection
@@ -169,6 +182,9 @@ class Options:
 
     # Initial condition mode
     dynamic_initial_conditions: bool = False
+
+    # Model inspection
+    model_output_dir: Optional[str] = None
 
     def copy(self, **overrides) -> 'Options':
         """Return a shallow copy of this Options with selected fields overridden."""

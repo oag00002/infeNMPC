@@ -22,8 +22,10 @@ class Plant:
     Parameters
     ----------
     options : Options
-        Simulation configuration.  ``nfe_finite`` and ``infinite_horizon`` are
-        overridden internally; all other fields are respected.
+        Simulation configuration.  ``nfe_finite``, ``infinite_horizon``, and
+        ``terminal_constraint_type`` are overridden internally (plant is always
+        a plain forward simulation with no terminal constraints); all other
+        fields are respected.
 
     Attributes
     ----------
@@ -33,7 +35,8 @@ class Plant:
 
     def __init__(self, options: Options):
         self.options = options
-        plant_options = options.copy(nfe_finite=1, infinite_horizon=False)
+        plant_options = options.copy(nfe_finite=1, infinite_horizon=False,
+                                     terminal_constraint_type='none')
 
         m = pyo.ConcreteModel()
         m = _make_finite_horizon_model(m, plant_options)
@@ -47,6 +50,12 @@ class Plant:
                 getattr(m, f"{var_name}_interpolation_constraints").deactivate()
 
         m.obj = pyo.Objective(expr=1)
+
+        if plant_options.model_output_dir:
+            import os
+            os.makedirs(plant_options.model_output_dir, exist_ok=True)
+            with open(os.path.join(plant_options.model_output_dir, "plant_model.txt"), "w") as f:
+                m.pprint(ostream=f)
 
         self._model = m
         self._solver = _ipopt_solver()

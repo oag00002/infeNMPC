@@ -180,12 +180,14 @@ def _check_optimal(results, label=""):
 
 def _ipopt_solver():
     """Return a pre-configured IPOPT solver instance."""
-    solver = pyo.SolverFactory('ipopt')
+    solver = pyo.SolverFactory('ipopt_v2')
     solver.options['linear_solver'] = 'ma57'
     solver.options['OF_ma57_automatic_scaling'] = 'yes'
     solver.options['max_iter'] = 6000
     solver.options['halt_on_ampl_error'] = 'yes'
     solver.options['bound_relax_factor'] = 0
+    # bound push
+    # mu init
     return solver
 
 
@@ -255,8 +257,9 @@ def _solve_steady_state_model(m, target, options, label="ss"):
     target : ScalarData or None
     options : Options
     label : str
-        Short name used as the stem of the debug output file
-        (e.g. ``"ss"`` → ``ss_model_output.txt``).
+        Short name used as the stem of the pprint output file when
+        ``options.model_output_dir`` is set
+        (e.g. ``"ss"`` → ``<model_output_dir>/ss_model.txt``).
 
     Returns
     -------
@@ -280,8 +283,10 @@ def _solve_steady_state_model(m, target, options, label="ss"):
         m.tracking_cost = tr_cost
         m.objective = pyo.Objective(expr=sum(m.tracking_cost[:, 0]))
 
-    if options.debug_flag:
-        with open(f"{label}_model_output.txt", "w") as f:
+    if options.model_output_dir:
+        import os
+        os.makedirs(options.model_output_dir, exist_ok=True)
+        with open(os.path.join(options.model_output_dir, f"{label}_model.txt"), "w") as f:
             m.pprint(ostream=f)
 
     solver = _ipopt_solver()

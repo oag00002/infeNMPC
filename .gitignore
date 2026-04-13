@@ -6,11 +6,12 @@ __pycache__/
 
 # Solver output / intermediate files
 model_output.txt
-ss_model_output.txt
-iv_model_output.txt
 *.nl
 *.sol
 *.log
+
+# Test model inspection outputs (written by tests/run_*.py via model_output_dir)
+tests/outputs/
 
 # Simulation results (generated at runtime)
 Results/
