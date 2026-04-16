@@ -3,7 +3,7 @@ Controller classes for finite- and infinite-horizon NMPC.
 """
 import resource
 import pyomo.environ as pyo
-from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver, _check_optimal
+from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver, _ipopt_warm_solver, _check_optimal
 from .model_equations import _get_model
 from .tools.indexing_tools import _add_time_indexed_expression
 from .infNMPC_options import Options
@@ -27,14 +27,24 @@ class Controller:
         self.options = options
         self._model = None
         self._solver = _ipopt_solver()
+        self._warm_solver = _ipopt_warm_solver()
+        self._initialized = False  # False until the first (cold) solve completes
 
     def solve(self):
-        """Solve the controller optimisation problem in place."""
+        """Solve the controller optimization problem in place.
+
+        The first call uses the cold-start solver (``_ipopt_solver``).  Every
+        subsequent call — after a shift-and-load has placed the previous
+        solution in the model as a warm start — uses ``_ipopt_warm_solver``
+        with smaller ``mu_init`` and ``bound_push``/``bound_frac`` values.
+        """
+        solver = self._warm_solver if self._initialized else self._solver
         before = resource.getrusage(resource.RUSAGE_CHILDREN)
-        results = self._solver.solve(self._model, tee=self.options.tee_flag)
+        results = solver.solve(self._model, tee=self.options.tee_flag)
         _check_optimal(results)
         after = resource.getrusage(resource.RUSAGE_CHILDREN)
         self.last_solve_time = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+        self._initialized = True
 
     def __getattr__(self, name: str):
         return getattr(self._model, name)
@@ -73,6 +83,8 @@ class InfiniteHorizonController(Controller):
 
         # ---- Objective ----
         _use_soft_tc = options.terminal_constraint_type == 'soft'
+        _use_soft_lyap = (options.lyap_flag
+                          and getattr(options, 'lyap_constraint_type', 'hard') == 'soft')
 
         if options.custom_objective:
             custom_objective = _get_model(options).custom_objective
@@ -93,6 +105,8 @@ class InfiniteHorizonController(Controller):
                 if _use_soft_tc:
                     obj = obj + (m.infinite_block.infinite_terminal_soft_penalty
                                  * options.terminal_soft_weight)
+                if _use_soft_lyap:
+                    obj = obj + m.lyap_slack * options.lyap_soft_weight
                 return obj
 
             m.lyapunov = pyo.Expression(
@@ -137,6 +151,8 @@ class InfiniteHorizonController(Controller):
                 if _use_soft_tc:
                     obj = obj + (m.infinite_block.infinite_terminal_soft_penalty
                                  * options.terminal_soft_weight)
+                if _use_soft_lyap:
+                    obj = obj + m.lyap_slack * options.lyap_soft_weight
                 return obj
 
         else:
@@ -184,6 +200,8 @@ class InfiniteHorizonController(Controller):
                 if _use_soft_tc:
                     obj = obj + (m.infinite_block.infinite_terminal_soft_penalty
                                  * options.terminal_soft_weight)
+                if _use_soft_lyap:
+                    obj = obj + m.lyap_slack * options.lyap_soft_weight
                 return obj
 
             m.lyapunov = pyo.Expression(
@@ -243,6 +261,8 @@ class FiniteHorizonController(Controller):
 
         # ---- Objective ----
         _use_soft_tc = options.terminal_constraint_type == 'soft'
+        _use_soft_lyap = (options.lyap_flag
+                          and getattr(options, 'lyap_constraint_type', 'hard') == 'soft')
 
         if options.custom_objective:
             custom_objective = _get_model(options).custom_objective
@@ -259,6 +279,8 @@ class FiniteHorizonController(Controller):
                     stage_cost = (stage_cost
                                   + m.finite_terminal_soft_penalty
                                   * options.terminal_soft_weight)
+                if _use_soft_lyap:
+                    stage_cost = stage_cost + m.lyap_slack * options.lyap_soft_weight
                 return stage_cost
 
         else:
@@ -292,6 +314,8 @@ class FiniteHorizonController(Controller):
                     stage_cost = (stage_cost
                                   + m.finite_terminal_soft_penalty
                                   * options.terminal_soft_weight)
+                if _use_soft_lyap:
+                    stage_cost = stage_cost + m.lyap_slack * options.lyap_soft_weight
                 return stage_cost
 
         m.objective = pyo.Objective(rule=objective_rule, sense=pyo.minimize)

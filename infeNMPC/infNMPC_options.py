@@ -166,6 +166,8 @@ class Options:
     # Lyapunov stability constraint
     lyap_flag: bool = False
     lyap_delta: float = 0.01
+    lyap_constraint_type: str = 'hard'
+    lyap_soft_weight: float = 1e4
 
     # Display / data-output options
     safe_run: bool = False

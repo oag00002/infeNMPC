@@ -92,8 +92,10 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `stage_cost_weights` | `[1,1,1/600]` | Per-variable weights for quadratic tracking cost |
 | `gamma` | `None` | Time-compression param; **auto-computed if None** |
 | `beta` | `1.0` | Weight on terminal cost vs. stage cost |
-| `lyap_flag` | `False` | Add Lyapunov stability constraint |
+| `lyap_flag` | `False` | Build Lyapunov infrastructure (`phi_track`, `V_prev`, constraint); constraint form set by `lyap_constraint_type` |
 | `lyap_delta` | `0.01` | Required fractional decrease per step (0=inactive, 1=tight) |
+| `lyap_constraint_type` | `'hard'` | `'hard'` = strict inequality constraint; `'soft'` = L1-relaxed via `lyap_slack` Var in objective; `'none'` = infrastructure built, no constraint added |
+| `lyap_soft_weight` | `1e4` | Weight on L1 slack penalty when `lyap_constraint_type='soft'` |
 | `input_suppression` | `False` | Penalize MV increments |
 | `input_suppression_factor` | `1.0` | Weight on move-suppression penalty |
 | `initialize_with_initial_data` | `False` | Spread IC across all time points |
@@ -140,9 +142,11 @@ def equations_write(m):
     """
     Add all differential equations and algebraic constraints.
     The framework calls this AFTER discretization, so m.time already has
-    all collocation points. Constraint rules must guard against t=0 using
-    `if t not in m.dVardt: return pyo.Constraint.Skip`
-    or similar.
+    all collocation points populated.
+
+    Do NOT guard against t=0 — the framework deletes all constraint
+    entries at t=0 immediately after this call (RADAU: t=0 is not a
+    collocation point).  Write rules over m.time without skip logic.
     Returns m.
     """
 ```
@@ -167,11 +171,19 @@ def default_options():
 
 ### Algebraic CV Initial Conditions
 
-When a CV is an algebraic variable (no DerivativeVar), the framework uses `_fix_initial_conditions_at_t0` to set its IC correctly:
+`_fix_initial_conditions_at_t0` sets initial conditions at t=0 by fixing all differential state variables directly:
 
-1. **Fix the algebraic CV at t=0** to the value loaded from `initial_data`.
-2. **Constraint analysis**: scan equality constraints at `t=0` to find any state variables that are *algebraically determined* through the fixed CV (e.g. `xD1A_def: xD1A[0] == x1[41,1,0]`). Those state vars are left free — they are pinned implicitly through the constraint.
-3. **Fix remaining state vars at t=0** to their `initialize=...` values (the model's intended physical ICs for variables not covered by `initial_values`).
+```python
+def _fix_initial_conditions_at_t0(block):
+    t0 = block.time.first()
+    for var in block.state_vars:
+        for index in var:
+            time_val = index[-1] if isinstance(index, tuple) else index
+            if time_val == t0:
+                var[index].fix()
+```
+
+**Algebraic CVs (e.g., `xD1A`, `xD2B`, `xC`) are NOT fixed at t=0.** Their values at t=0 are implicitly determined by `equations_write` equality constraints — but the framework **deletes all constraint entries at t=0** immediately after `equations_write` runs in `_finite_block_gen` (RADAU: t=0 is not a collocation point). This means algebraic CVs at t=0 have no equality constraints and remain free variables. This is intentional: their actual IC is carried in as the warm-start value from the IC solve and propagated via the unfix→load→refix pattern in `run_MPC.py`.
 
 The steady-state warm-start in `_make_finite_horizon_model` skips `t=0` so that `initialize=...` values are preserved there for non-CV state vars.
 
@@ -229,7 +241,6 @@ mpc_loop(options)
   ├─ get initial CV values from plant
   │
   └─ for i in range(num_horizons):
-        [if i==10] write model_output.txt  ← debug dump, always runs
 
         controller.solve()            # IPOPT solve, records cpu time
         [if debug_flag] _report_constraint_violations(controller._model, ...)
@@ -239,10 +250,16 @@ mpc_loop(options)
           first_stage_cost = quadratic cost at t_first_fe on finite block
           update lyap_block.V_prev and lyap_block.first_stage_cost_prev
 
-        ts_data = controller.interface.get_data_at_time(sampling_time)
-        input_data = ts_data.extract_variables([MV vars...])
+        # Warm-start plant from controller's full first-FE solution.
+        # load_data SKIPS FIXED VARIABLES — MVs and slacks are fixed, so they must
+        # be temporarily unfixed to receive the controller's optimal values.
+        unfix all plant MVs
+        unfix all plant slacks (if slack_index exists)
+        plant.interface.load_data(controller.interface.get_data_at_time(new_data_time),
+                                  time_points=new_data_time)
+        re-fix all plant MVs
+        re-fix all plant slacks
 
-        plant.interface.load_data(input_data, time_points=new_data_time)
         plant.solve()                 # integrate one sampling interval
 
         extract CV and MV values from plant → io_data_array
@@ -250,16 +267,29 @@ mpc_loop(options)
 
         concatenate plant trajectory onto sim_data
 
-        tf_data = plant state at sampling_time (state vars only)
-        plant.interface.load_data(tf_data)         # reset plant IC
+        # Build tf_data: state vars only at sampling_time (ScalarData)
+        tf_data = plant state vars at sampling_time
+
+        # Update plant IC for next step (unfix→load→refix at t=0).
+        # State vars at t=0 are fixed; load_data skips fixed vars without this pattern.
+        plant.interface.load_data(tf_data)   # warm-start t>0 collocation points
+        unfix all plant state vars at t=0
+        plant.interface.load_data(tf_data, time_points=t0_plant)
+        re-fix all plant state vars at t=0
+
+        # Shift controller horizon and load exact plant endpoint as new IC.
         controller.interface.shift_values_by_time(sampling_time)
-        controller.interface.load_data(tf_data, time_points=t0)  # update controller IC
+        unfix all controller state vars at t0_controller
+        controller.interface.load_data(tf_data, time_points=t0_controller)
+        re-fix all controller state vars at t0_controller
+        # Reset extrapolated tail to steady-state guess (avoids Lyapunov infeasibility)
+        controller.interface.load_data(_ss_warm_data, time_points=t_last_controller)
 
   _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, options,
                       folder_path=run_folder)
 ```
 
-**Note:** At iteration `i==10`, the controller model is printed to `model_output.txt` (a debug dump left in the loop body).
+**Critical**: `DynamicModelInterface.load_data` silently **skips fixed variables**. Every place where data must be loaded into fixed-at-t=0 state vars, or into fixed MVs/slacks, requires the explicit unfix→load→refix pattern shown above. Omitting it means those variables never receive updated values, which causes incorrect initial conditions and plant infeasibility.
 
 ---
 
@@ -282,6 +312,13 @@ This is the most complex file. It builds Pyomo models in stages.
 - Time: `[0, nfe_finite * sampling_time]`
 - Collocation: `LAGRANGE-RADAU` with `clean_model='delete'`
 - If `ncp_finite > 1`: MVs are reduced to 1 collocation point (piecewise-constant)
+- **t=0 constraint deletion**: After calling `m.equations_write(m)`, the block immediately deletes all constraint entries indexed at t=0:
+  ```python
+  for _con in m.component_objects(pyo.Constraint):
+      for _idx in [k for k in _con.keys() if (k[-1] if isinstance(k, tuple) else k) == t0]:
+          del _con[_idx]
+  ```
+  This is necessary because `equations_write` runs post-discretization (when `m.time` is fully populated) and inadvertently creates entries at t=0, which is NOT a RADAU collocation point. Constraints at t=0 would couple algebraic CVs to state variables at that time point — but the state-var ICs are loaded by `run_MPC.py` via unfix→load→refix, not by constraint inference. Leaving these constraints active causes stale algebraic CV values (never updated by `shift_values_by_time`) to corrupt state var ICs after iteration 0.
 - If `lyap_flag`: adds `phi_track` as a scalar `pyo.Expression` = sum of quadratic tracking costs at each FE right-endpoint (RADAU collocation points), skipping `t=0`. This is the Riemann-sum contribution of the finite block to the total Lyapunov measure.
   - For finite-only: also adds `V_prev`, `first_stage_cost_prev`, and `lyap_stability_constraint` on the block.
   - For infinite-horizon: the Lyapunov constraint is placed on the parent `ConcreteModel` by `_make_infinite_horizon_model` (see below).
@@ -311,6 +348,11 @@ m.lyap_stability_constraint:
 `V_prev` and `first_stage_cost_prev` live on the top-level model `m`.
 `finite_block.phi_track` is the Riemann-sum Expression; `infinite_block.phi_track[τ=1]` is the ODE integral.
 
+The constraint form is controlled by `lyap_constraint_type`:
+- `'hard'` — strict inequality constraint as shown above.
+- `'soft'` — adds `m.lyap_slack` (`NonNegativeReals` Var) to the RHS, allowing the constraint to be violated at cost `lyap_soft_weight * lyap_slack` in the objective. Useful when a short finite horizon makes the hard constraint locally infeasible after a shift.
+- `'none'` — `phi_track` and `V_prev` infrastructure is still built, but no constraint is added.
+
 ### Time Transformation (key math)
 
 Physical ODE: `dx/dt = f(x, u)`
@@ -328,8 +370,10 @@ For each state variable: `finite_block.var[t_end] == infinite_block.var[t_start]
 ## Controller Classes (`controllers.py`)
 
 ### `Controller` (base)
-- Holds `self._model` (Pyomo ConcreteModel), `self._solver` (IPOPT)
-- `solve()`: calls IPOPT, checks termination condition, records `self.last_solve_time` (CPU via `resource.getrusage`)
+- Holds `self._model` (Pyomo ConcreteModel), `self._solver` (cold IPOPT), `self._warm_solver` (warm-start IPOPT), `self._initialized = False`
+- **Cold solver** (`_ipopt_solver`): used only on the first `solve()` call. Standard IPOPT settings with `bound_relax_factor=0`.
+- **Warm solver** (`_ipopt_warm_solver`): used on all subsequent `solve()` calls after shift+load. Same settings as cold but with `bound_push=1e-8` and `bound_frac=1e-8` to keep the warm-started solution close to bounds. Note: `warm_start_init_point` is intentionally omitted because Pyomo has no Suffix setup for dual multipliers — enabling it would pass zero duals to IPOPT, which is worse than the default.
+- `solve()`: dispatches to cold or warm solver via `_initialized` flag, checks termination condition, records `self.last_solve_time` (CPU via `resource.getrusage`), then sets `_initialized = True`
 - `__getattr__`: falls through to `self._model` — so `controller.finite_block`, `controller.interface`, etc. all work
 
 ### `InfiniteHorizonController(options, data=None)`
@@ -617,28 +661,36 @@ ternary_distillation_model.py:
   custom_objective: minimize feed + energy cost minus product revenue
   slack_index: ["xD1A_eps", "xD2B_eps", "xC_eps", "M1_eps", "M2_eps"]
 
-run.py (lyap_flag_examples version):
+run.py (lyap_flag_examples version, confirmed working as of 2026-04-15):
   options = Options.for_model_module(ternary_distillation_model,
-    num_horizons=10, sampling_time=1,
-    nfe_finite=3, ncp_finite=3,
+    num_horizons=5,         # set to 5 for testing; restore to 10+ for production
+    sampling_time=1,
+    nfe_finite=1, ncp_finite=3,
     infinite_horizon=False,
     custom_objective=True,
-    input_suppression=True, input_suppression_factor=1e3,
-    stage_cost_weights=[1e4, 1e4, 1e4, 1, 1, 1, 1, 1, 1, 1, 1],
-    lyap_flag=False, lyap_delta=0.01,
-    debug_flag=True, safe_run=True,
+    lyap_flag=True, lyap_delta=0.01,
+    lyap_constraint_type='soft', lyap_soft_weight=1.0,
+    terminal_constraint_type='soft',
+    debug_flag=True, safe_run=True, tee_flag=True,
   )
 ```
 
-This model uses **algebraic CVs** (`xD1A`, `xD2B`, `xC` are computed from tray compositions via equality constraints), so `_fix_initial_conditions_at_t0` applies the algebraic IC logic. It also demonstrates `m.slack_index` — an optional set for slack variables used for constraint softening.
+This model uses **algebraic CVs** (`xD1A`, `xD2B`, `xC` are computed from tray compositions via equality constraints). They are NOT fixed at t=0 by `_fix_initial_conditions_at_t0` — only differential state vars are fixed. The t=0 constraint deletion in `_finite_block_gen` removes the `xD1A_def[0]`, `xD2B_def[0]`, `xC_def[0]` entries that would otherwise couple algebraic CVs to state vars at t=0. It also demonstrates `m.slack_index` — an optional set for slack variables used for constraint softening.
+
+**Plant options override**: `plant_options` in `Plant.__init__` sets `lyap_flag=False` to eliminate the `lyap_slack` DOF from the plant model (plant only needs to integrate the ODE; Lyapunov slack is a controller artifact).
 
 ---
 
-## Known Issues / State at Last Review (2026-04-09)
+## Known Issues / State at Last Review (2026-04-15)
 
-- Branch: `fix-terminal-constraints`
+- Branch: `shifting-behavior`
 - Most examples are not confirmed working; the CSTR lyap_flag example is the primary test case
-- `model_output.txt` is written to the working directory **twice**: at controller construction time (`controllers.py`) and again at iteration 10 in `run_MPC.py:122–124` (the latter overwrites it). Both are debug behavior.
+- **Ternary distillation lyap example confirmed working** (5 iterations, all IPOPT-optimal, constraint violations at 1e-12 to 1e-15 numerical precision). See LLMJOURNAL.md "Plant Squareness & Warm-Start" entry for full history.
+- `model_output.txt` is written to the working directory at controller construction time (`controllers.py`). This is debug behavior.
 - `gamma` in the results folder path reflects `options.gamma` (which stays `None` until the block stores it on `infinite_block.gamma` — the folder path may show `gamma_None` even after auto-computation)
-- The ternary distillation example is still being tested/developed; `lyap_flag=False` by default
+- **Pending cleanup items** (not yet addressed):
+  - `plant.py`: unconditional `pprint` to `plant_model.txt` in `Plant.__init__` should be gated by `options.debug_flag` or removed
+  - `run_MPC.py`: pprint dumps for iterations 0 and 1 (controller post-solve and plant pre-solve) gated by `debug_flag and i <= 1` — acceptable for debugging, but can be removed for production
+  - `examples/lyap_flag_examples/enmpc_ternary_distillation/run.py`: `num_horizons=5` was set for testing; should be restored to 10+ for production runs
+  - **Infinite block (`_infinite_block_gen`)**: Uses LAGRANGE-LEGENDRE where both `t=0` AND `t=t_last` are non-collocation points. The same `equations_write` spurious-constraint issue almost certainly exists there. Not yet investigated.
 - **IC framework added (2026-04-09):** `_make_steady_state_model` has `fix_slacks=True` param; `_check_ic_consistency`, `_build_ic_data_steady_state`, `_build_ic_data_dynamic`, `_build_ic_data` added to `tools/initialization_tools.py`; `dynamic_initial_conditions` option added. See LLMJOURNAL.md for full details.

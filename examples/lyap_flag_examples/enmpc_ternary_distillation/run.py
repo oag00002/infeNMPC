@@ -27,17 +27,17 @@ from infeNMPC import Options, mpc_loop  # noqa: E402
 options = Options.for_model_module(
     ternary_distillation_model,
     # ---- Simulation control ----
-    num_horizons=25,
+    num_horizons=5,
     sampling_time=1,
     # ---- Finite-horizon discretization ----
-    nfe_finite=3,
+    nfe_finite=1,
     ncp_finite=3,
     # ---- Infinite-horizon discretization ----
     infinite_horizon=False,
     nfe_infinite=3,
     ncp_infinite=3,
     # ---- Controller settings ----
-    terminal_constraint_type='none',
+    terminal_constraint_type='soft',
     custom_objective=True,
     terminal_cost_riemann=False,
     initialize_with_initial_data=False,
@@ -60,6 +60,8 @@ options = Options.for_model_module(
     # ---- Lyapunov stability constraint ----
     lyap_flag=True,
     lyap_delta=0.01,
+    lyap_constraint_type='soft',
+    lyap_soft_weight=1.0,
     # ---- Debugging ----
     debug_flag=True,
 )
