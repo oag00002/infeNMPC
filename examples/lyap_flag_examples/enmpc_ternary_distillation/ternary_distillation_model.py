@@ -135,9 +135,9 @@ def variables_initialize(m):
 
     # ---- Setpoints for CVs ----
     m.setpoints = pyo.Param(m.CV_index, initialize={
-        "xD1A": 0.95,
+        "xD1A": 0.9839,
         "xD2B": 0.95,
-        "xC": 0.95,
+        "xC": 0.95943,
     })
 
     # ---- Initial Values for CVs ----
@@ -434,7 +434,7 @@ def custom_objective(m, options):
         penalty = rho * (CV purity slacks + holdup bound slacks)
     """
     pF  = 1.0    # Feed price
-    pV  = 1.0    # Energy price (per unit of boilup)
+    pV  = 0.008  # Energy price (per unit of boilup)
     pA  = 1.0    # Light component A product price
     pB  = 2.0    # Medium component B product price (higher value)
     pC  = 1.0    # Heavy component C product price

@@ -12,7 +12,7 @@ Non-collocation cleanup is handled by passing ``clean_model='delete'`` to
 MPC data-access operations use the safe sparse-access paths from
 ``contrib.mpc.interfaces.*_clean``.
 """
-from .infNMPC_options import _import_settings
+from .infNMPC_options import _import_settings  # noqa: F401  (used by legacy callers)
 import pyomo.environ as pyo
 from .model_equations import _get_model
 from pyomo.contrib.mpc import DynamicModelInterface, ScalarData
@@ -901,12 +901,78 @@ def _link_blocks(m):
     return m
 
 
-# ---- Testing the Model ----
+# ---- Steady-state economic check ----
 if __name__ == '__main__':
-    options = _import_settings()
-    m = pyo.ConcreteModel()
+    import sys
+    from pathlib import Path
 
-    print('\nTesting Finite Horizon Model Setup')
-    m = _make_finite_horizon_model(m, options)
+    # Make sure the repo root is on sys.path when invoked directly.
+    _repo_root = str(Path(__file__).parent.parent)
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
 
-    assert isinstance(m, pyo.ConcreteModel)
+    from infeNMPC.infNMPC_options import Options  # type: ignore[import]
+
+    # Load the ternary distillation model from the lyap_flag example.
+    _example_dir = (
+        Path(__file__).parent.parent
+        / 'examples' / 'lyap_flag_examples' / 'enmpc_ternary_distillation'
+    )
+    sys.path.insert(0, str(_example_dir))
+    import ternary_distillation_model  # type: ignore[import]  # noqa: E402
+
+    options = Options.for_model_module(
+        ternary_distillation_model,
+        sampling_time=1,
+        nfe_finite=3,
+        ncp_finite=3,
+        infinite_horizon=False,
+        custom_objective=True,
+        tee_flag=True,
+        stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    )
+
+    print('\nBuilding steady-state model for ternary distillation...')
+    m_ss = pyo.ConcreteModel()
+    m_ss = _make_steady_state_model(m_ss, options)
+    # m_ss.xC.fix(0.95)
+    # m_ss.xD1A.fix(0.95)
+    # m_ss.xD2B.fix(0.95)
+
+    print('Solving steady-state model...')
+    ss_data = _solve_steady_state_model(m_ss, None, options, label="ss")
+
+    # ---- Report objective sign ----
+    obj_val = m_ss.ss_obj_value
+    print(f'\nSteady-state objective value: {obj_val:.6g}')
+    if obj_val < 0:
+        print('  -> NEGATIVE: revenue > cost (system is profitable at SS optimum)')
+    else:
+        print('  -> POSITIVE: cost > revenue (system loses money at SS optimum)')
+
+    # ---- Economic breakdown ----
+    # RADAU nfe=1 ncp=1: single collocation point is at t=1.
+    t_ss = m_ss.time.last()
+    pF, pV, pA, pB, pC = 1.0, 0.008, 1.0, 2.0, 1.0
+
+    F_val   = pyo.value(m_ss.F)
+    VB1_val = pyo.value(m_ss.VB1[t_ss])
+    VB2_val = pyo.value(m_ss.VB2[t_ss])
+    D1_val  = pyo.value(m_ss.D1[t_ss])
+    D2_val  = pyo.value(m_ss.D2[t_ss])
+    B2_val  = pyo.value(m_ss.B2[t_ss])
+    xD1A    = pyo.value(m_ss.xD1A[t_ss])
+    xD2B    = pyo.value(m_ss.xD2B[t_ss])
+    xC      = pyo.value(m_ss.xC[t_ss])
+
+    feed_cost   = pF * F_val
+    energy_cost = pV * (VB1_val + VB2_val)
+    revenue     = pA * D1_val + pB * D2_val + pC * B2_val
+
+    print('\nEconomic breakdown at SS optimum (t = t_last):')
+    print(f'  Feed cost    pF*F             = {feed_cost:.4f}')
+    print(f'  Energy cost  pV*(VB1+VB2)     = {pV}*({VB1_val:.4f} + {VB2_val:.4f}) = {energy_cost:.4f}')
+    print(f'  Revenue      pA*D1+pB*D2+pC*B2 = {pA*D1_val:.4f} + {pB*D2_val:.4f} + {pC*B2_val:.4f} = {revenue:.4f}')
+    print(f'  Net profit rate (revenue - cost) = {revenue - feed_cost - energy_cost:.4f} $/h')
+    print(f'  Objective (cost - revenue)       = {feed_cost + energy_cost - revenue:.4f}')
+    print(f'\nPurity CVs: xD1A={xD1A:.4f}  xD2B={xD2B:.4f}  xC={xC:.4f}')
