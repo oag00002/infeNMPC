@@ -448,7 +448,7 @@ def custom_objective(m, options):
         penalty = rho * (CV purity slacks + holdup bound slacks)
     """
     pF  = 1.0    # Feed price
-    pV  = 1.0    # Energy price (per unit of boilup)
+    pV  = 0.008  # Energy price (per unit of boilup)
     pA  = 1.0    # Light component A product price
     pB  = 2.0    # Medium component B product price (higher value)
     pC  = 1.0    # Heavy component C product price

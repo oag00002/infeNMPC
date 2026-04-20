@@ -506,6 +506,20 @@ def _handle_mpc_results(sim_data, time_series, io_data_array, plant, cpu_time, o
     print(f"Average CPU time per solve: {average_cpu_time:.4f} seconds")
     print(f"Results saved to: {folder_path}")
 
+    # Append timing summary to run_config.txt so it lives alongside the options.
+    config_path = os.path.join(folder_path, "run_config.txt")
+    try:
+        with open(config_path, "a") as f:
+            f.write("\n[timing]\n")
+            f.write(f"num_solves: {len(cpu_time)}\n")
+            f.write(f"avg_cpu_time_s: {average_cpu_time:.6f}\n")
+            if cpu_time:
+                f.write(f"min_cpu_time_s: {min(cpu_time):.6f}\n")
+                f.write(f"max_cpu_time_s: {max(cpu_time):.6f}\n")
+            f.write(f"total_cpu_time_s: {sum(cpu_time):.6f}\n")
+    except Exception as e:
+        print(f"[Error] Could not write timing to {config_path}: {e}")
+
 
 import csv
 

@@ -20,7 +20,7 @@ def _get_variable_key_for_data(model, name):
     """
     var_name, index = _parse_indexed_name(name)
     var_obj = getattr(model, var_name)
-    base_name = var_obj.name.split("[")[0]
+    base_name = var_obj.local_name
     if not index:
         return f"{base_name}[*]"
     index_str = ",".join(str(i) for i in index) + ",*"

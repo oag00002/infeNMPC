@@ -6,6 +6,7 @@ __pycache__/
 
 # Solver output / intermediate files
 model_output.txt
+plant_model.txt
 *.nl
 *.sol
 *.log

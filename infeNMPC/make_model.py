@@ -12,7 +12,7 @@ Non-collocation cleanup is handled by passing ``clean_model='delete'`` to
 MPC data-access operations use the safe sparse-access paths from
 ``contrib.mpc.interfaces.*_clean``.
 """
-from .infNMPC_options import _import_settings
+from .infNMPC_options import _import_settings  # noqa: F401  (used by legacy callers)
 import pyomo.environ as pyo
 from .model_equations import _get_model
 from pyomo.contrib.mpc import DynamicModelInterface, ScalarData
@@ -90,81 +90,24 @@ def _terminal_weights(options, var_names, stage_cost_index):
 
 def _fix_initial_conditions_at_t0(block):
     """
-    Fix initial conditions at t=0 for differential state vars and algebraic CVs.
+    Fix initial conditions at t=0 for differential state variables.
 
-    For models where CVs are algebraic variables (no DerivativeVar), simply
-    fixing all state vars at t=0 and separately loading initial_data creates
-    contradictions through the defining equality constraints.  For example, if
-    ``xD1A_def: xD1A[t] == x1[41,1,t]`` holds and we fix both ``xD1A[0]=0.90``
-    and ``x1[41,1,0]=0.95`` (steady-state), the constraint is violated.
-
-    This function handles the two cases correctly:
-
-    **Differential CVs** (CV is in state_vars, e.g. CSTR Ca/Cb):
-      Nothing special — state vars at t=0 are fixed to their current values,
-      which have already been loaded from initial_data by the caller.
-
-    **Algebraic CVs** (CV not in state_vars, e.g. distillation xD1A):
-      1. Fix ``cv[t0]`` to the value already loaded from initial_data.
-      2. Scan equality constraints at t=0 to find state vars that are now
-         *determined* through those fixed algebraic CVs (e.g. x1[41,1,0] via
-         xD1A_def).  Those state vars are left free — their t=0 value is set
-         implicitly by the constraint rather than by a direct fix.
-      3. Fix all remaining state vars at t=0 to their current values (which
-         come from the model's ``initialize=...`` functions — the intended
-         physical initial conditions for variables not covered by initial_values).
+    All equations_write constraint entries at t=0 are deleted before this is
+    called (see ``_finite_block_gen``), so there are no algebraic coupling
+    constraints at t=0.  Every differential state variable is fixed directly
+    at its current value (loaded from initial_data by the caller).
 
     Parameters
     ----------
     block : pyo.ConcreteModel or pyo.Block
-        Must have ``.time``, ``.CV_index``, and ``.state_vars`` (set of Var
-        components).  Must have been discretised before this is called.
+        Must have ``.time`` and ``.state_vars``.  Must have been discretised
+        and had t=0 equations_write entries removed before this is called.
     """
     t0 = block.time.first()
-    state_var_components = block.state_vars  # set of Var components
-
-    # Identify algebraic CVs: in CV_index but NOT a differential state variable
-    algebraic_cv_names = [
-        cv for cv in block.CV_index
-        if getattr(block, cv) not in state_var_components
-    ]
-
-    # Fix algebraic CVs at t0 to the values loaded from initial_data
-    algebraic_ids_at_t0 = set()
-    for cv_name in algebraic_cv_names:
-        cv_var = getattr(block, cv_name)
-        if t0 in cv_var:
-            cv_var[t0].fix()
-            algebraic_ids_at_t0.add(id(cv_var[t0]))
-
-    # Scan equality constraints at t0 to find state vars whose t=0 value is
-    # already determined through the fixed algebraic CVs.  Those must not also
-    # be independently fixed (which would over-constrain the system).
-    state_vars_to_skip = set()
-    if algebraic_ids_at_t0:
-        for con in block.component_objects(pyo.Constraint, active=True):
-            for idx in list(con.keys()):
-                time_val = idx[-1] if isinstance(idx, tuple) else idx
-                if time_val != t0:
-                    continue
-                expr = con[idx].expr
-                if expr is None:
-                    continue
-                all_vars = list(identify_variables(expr, include_fixed=True))
-                # Only act on constraints that involve a fixed algebraic CV at t0
-                if not any(id(v) in algebraic_ids_at_t0 for v in all_vars):
-                    continue
-                # Free state vars in this constraint are determined by it
-                for v in all_vars:
-                    if (not v.is_fixed()
-                            and v.parent_component() in state_var_components):
-                        state_vars_to_skip.add(id(v))
-
-    # Fix remaining state vars at t0 (those not determined by algebraic CVs)
-    for var in state_var_components:
+    for var in block.state_vars:
         for index in var:
             time_val = index[-1] if isinstance(index, tuple) else index
-            if time_val == t0 and id(var[index]) not in state_vars_to_skip:
+            if time_val == t0:
                 var[index].fix()
 
 
@@ -179,15 +122,58 @@ def _check_optimal(results, label=""):
 
 
 def _ipopt_solver():
-    """Return a pre-configured IPOPT solver instance."""
+    """Return a pre-configured IPOPT solver instance for cold (initial) solves."""
     solver = pyo.SolverFactory('ipopt_v2')
     solver.options['linear_solver'] = 'ma57'
     solver.options['OF_ma57_automatic_scaling'] = 'yes'
     solver.options['max_iter'] = 6000
     solver.options['halt_on_ampl_error'] = 'yes'
     solver.options['bound_relax_factor'] = 0
-    # bound push
-    # mu init
+    return solver
+
+
+def _ipopt_warm_solver():
+    """Return a pre-configured IPOPT solver instance for warm-started MPC updates.
+
+    After a shift-and-load the primal/dual solution from the previous iteration
+    is already a good starting point.  The warm-start settings keep IPOPT close
+    to that point:
+
+    * ``warm_start_init_point`` — tells IPOPT to accept the primal/dual values
+      already in the model as the initial iterate rather than re-projecting them.
+    * ``mu_init`` — sets the initial barrier parameter to a small value so that
+      IPOPT starts in the neighbourhood of the primal-dual solution rather than
+      from the default (usually 0.1).
+    * ``bound_push`` / ``bound_frac`` — control how aggressively IPOPT pushes the
+      starting point away from bounds.  Defaults (0.01) are appropriate for cold
+      starts; much smaller values (1e-8) keep the warm-started iterate where it is.
+    """
+    solver = pyo.SolverFactory('ipopt_v2')
+    solver.options['linear_solver'] = 'ma57'
+    solver.options['OF_ma57_automatic_scaling'] = 'yes'
+    solver.options['max_iter'] = 6000
+    solver.options['halt_on_ampl_error'] = 'yes'
+    solver.options['bound_relax_factor'] = 0
+    # warm_start_init_point is intentionally omitted: Pyomo's ipopt_v2 interface
+    # does not pass dual variable (multiplier) values to IPOPT without an explicit
+    # Suffix setup.  Enabling it with zero duals gives IPOPT a badly-conditioned
+    # initial KKT system and a misleading first search direction.  The primal warm
+    # start is already fully effective: shift_values_by_time places the shifted
+    # solution directly in the Pyomo model, and IPOPT reads those as its initial
+    # primal iterate automatically.
+    #
+    # mu_init is intentionally omitted (IPOPT default = 0.1): the primal
+    # infeasibility at the warm-started point grows as the Lyapunov constraint
+    # becomes increasingly active with each iteration.  A fixed mu_init = 1e-3
+    # is fine for nearly-feasible starts but prevents recovery when infeasibility
+    # is large (e.g. 19.1 at iteration 2), causing IPOPT to spend all its
+    # iterations making no progress.
+    #
+    # bound_push / bound_frac: tighter than IPOPT default (0.01) so that the
+    # good warm-started variable values are preserved near their bounds rather
+    # than being projected further into the interior at the start of each solve.
+    solver.options['bound_push'] = 1e-8
+    solver.options['bound_frac'] = 1e-8
     return solver
 
 
@@ -363,12 +349,23 @@ def _make_infinite_horizon_model(m, options):
         m.V_prev = pyo.Param(mutable=True, initialize=1e10)
         m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
         tau_last = m.infinite_block.time.last()
-        m.lyap_stability_constraint = pyo.Constraint(
-            expr=(
-                m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
-                <= -options.lyap_delta * m.first_stage_cost_prev
+        lct = getattr(options, 'lyap_constraint_type', 'hard')
+        if lct == 'hard':
+            m.lyap_stability_constraint = pyo.Constraint(
+                expr=(
+                    m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
+                    <= -options.lyap_delta * m.first_stage_cost_prev
+                )
             )
-        )
+        elif lct == 'soft':
+            m.lyap_slack = pyo.Var(initialize=0.0, domain=pyo.NonNegativeReals)
+            m.lyap_stability_constraint = pyo.Constraint(
+                expr=(
+                    m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
+                    <= -options.lyap_delta * m.first_stage_cost_prev + m.lyap_slack
+                )
+            )
+        # 'none': infrastructure built, no constraint added
 
     m.interface = DynamicModelInterface(
         m.finite_block, m.finite_block.time, clean_model=True
@@ -493,6 +490,22 @@ def _finite_block_gen(m, options):
 
     _model.equations_write(m)
 
+    # RADAU: delete all constraint entries at t=0 written by equations_write.
+    # t=0 is not a collocation point; algebraic variables (CVs, slacks, MVs)
+    # have no ODE equation there.  equations_write must run post-discretization
+    # (Pyomo DAE dictionary expansion only works after the time set is populated),
+    # so it iterates over all of m.time including t=0.  Those t=0 entries must
+    # not exist — they couple algebraic vars at the non-collocation starting
+    # point and cause IC inconsistencies when state-var ICs are updated.
+    _t0_del = m.time.first()
+    for _con in m.component_objects(pyo.Constraint):
+        _keys_at_t0 = [
+            _idx for _idx in list(_con.keys())
+            if (_idx[-1] if isinstance(_idx, tuple) else _idx) == _t0_del
+        ]
+        for _idx in _keys_at_t0:
+            del _con[_idx]
+
     if options.lyap_flag:
         track_list_ft = list(m.CV_index) + list(m.MV_index)
         c_raw_ft = options.stage_cost_weights or []
@@ -523,12 +536,23 @@ def _finite_block_gen(m, options):
             # in _make_infinite_horizon_model, referencing both blocks.
             m.V_prev = pyo.Param(mutable=True, initialize=1e10)
             m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
-            m.lyap_stability_constraint = pyo.Constraint(
-                expr=(
-                    m.phi_track - m.V_prev
-                    <= -options.lyap_delta * m.first_stage_cost_prev
+            lct = getattr(options, 'lyap_constraint_type', 'hard')
+            if lct == 'hard':
+                m.lyap_stability_constraint = pyo.Constraint(
+                    expr=(
+                        m.phi_track - m.V_prev
+                        <= -options.lyap_delta * m.first_stage_cost_prev
+                    )
                 )
-            )
+            elif lct == 'soft':
+                m.lyap_slack = pyo.Var(initialize=0.0, domain=pyo.NonNegativeReals)
+                m.lyap_stability_constraint = pyo.Constraint(
+                    expr=(
+                        m.phi_track - m.V_prev
+                        <= -options.lyap_delta * m.first_stage_cost_prev + m.lyap_slack
+                    )
+                )
+            # 'none': infrastructure built, no constraint added
 
     # --- Terminal constraints (finite-horizon controller only) ---
     # For infinite-horizon models, the terminal point is τ=1 of the infinite
@@ -877,12 +901,78 @@ def _link_blocks(m):
     return m
 
 
-# ---- Testing the Model ----
+# ---- Steady-state economic check ----
 if __name__ == '__main__':
-    options = _import_settings()
-    m = pyo.ConcreteModel()
+    import sys
+    from pathlib import Path
 
-    print('\nTesting Finite Horizon Model Setup')
-    m = _make_finite_horizon_model(m, options)
+    # Make sure the repo root is on sys.path when invoked directly.
+    _repo_root = str(Path(__file__).parent.parent)
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
 
-    assert isinstance(m, pyo.ConcreteModel)
+    from infeNMPC.infNMPC_options import Options  # type: ignore[import]
+
+    # Load the ternary distillation model from the lyap_flag example.
+    _example_dir = (
+        Path(__file__).parent.parent
+        / 'examples' / 'lyap_flag_examples' / 'enmpc_ternary_distillation'
+    )
+    sys.path.insert(0, str(_example_dir))
+    import ternary_distillation_model  # type: ignore[import]  # noqa: E402
+
+    options = Options.for_model_module(
+        ternary_distillation_model,
+        sampling_time=1,
+        nfe_finite=3,
+        ncp_finite=3,
+        infinite_horizon=False,
+        custom_objective=True,
+        tee_flag=True,
+        stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    )
+
+    print('\nBuilding steady-state model for ternary distillation...')
+    m_ss = pyo.ConcreteModel()
+    m_ss = _make_steady_state_model(m_ss, options)
+    # m_ss.xC.fix(0.95)
+    # m_ss.xD1A.fix(0.95)
+    # m_ss.xD2B.fix(0.95)
+
+    print('Solving steady-state model...')
+    ss_data = _solve_steady_state_model(m_ss, None, options, label="ss")
+
+    # ---- Report objective sign ----
+    obj_val = m_ss.ss_obj_value
+    print(f'\nSteady-state objective value: {obj_val:.6g}')
+    if obj_val < 0:
+        print('  -> NEGATIVE: revenue > cost (system is profitable at SS optimum)')
+    else:
+        print('  -> POSITIVE: cost > revenue (system loses money at SS optimum)')
+
+    # ---- Economic breakdown ----
+    # RADAU nfe=1 ncp=1: single collocation point is at t=1.
+    t_ss = m_ss.time.last()
+    pF, pV, pA, pB, pC = 1.0, 0.008, 1.0, 2.0, 1.0
+
+    F_val   = pyo.value(m_ss.F)
+    VB1_val = pyo.value(m_ss.VB1[t_ss])
+    VB2_val = pyo.value(m_ss.VB2[t_ss])
+    D1_val  = pyo.value(m_ss.D1[t_ss])
+    D2_val  = pyo.value(m_ss.D2[t_ss])
+    B2_val  = pyo.value(m_ss.B2[t_ss])
+    xD1A    = pyo.value(m_ss.xD1A[t_ss])
+    xD2B    = pyo.value(m_ss.xD2B[t_ss])
+    xC      = pyo.value(m_ss.xC[t_ss])
+
+    feed_cost   = pF * F_val
+    energy_cost = pV * (VB1_val + VB2_val)
+    revenue     = pA * D1_val + pB * D2_val + pC * B2_val
+
+    print('\nEconomic breakdown at SS optimum (t = t_last):')
+    print(f'  Feed cost    pF*F             = {feed_cost:.4f}')
+    print(f'  Energy cost  pV*(VB1+VB2)     = {pV}*({VB1_val:.4f} + {VB2_val:.4f}) = {energy_cost:.4f}')
+    print(f'  Revenue      pA*D1+pB*D2+pC*B2 = {pA*D1_val:.4f} + {pB*D2_val:.4f} + {pC*B2_val:.4f} = {revenue:.4f}')
+    print(f'  Net profit rate (revenue - cost) = {revenue - feed_cost - energy_cost:.4f} $/h')
+    print(f'  Objective (cost - revenue)       = {feed_cost + energy_cost - revenue:.4f}')
+    print(f'\nPurity CVs: xD1A={xD1A:.4f}  xD2B={xD2B:.4f}  xC={xC:.4f}')

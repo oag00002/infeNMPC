@@ -1,5 +1,271 @@
 # Next Tasks
 
+## Plant Squareness & Warm-Start (2026-04-15) — RESOLVED
+
+**Branch:** `shifting-behavior`
+
+### Problem: plant solve fails with infeasibility
+
+The ternary distillation plant solve was failing with IPOPT infeasibility on every iteration.
+All root causes were identified and fixed.
+
+---
+
+### Root cause 1: Dual infeasibility in controller (FIXED)
+
+`lyap_soft_weight = 1e4` combined with `stage_cost_weights = [1e4, 1e4, 1e4, ...]` produced
+Lagrange multipliers of O(1e8) for the Lyapunov constraint, causing `inf_du` to blow up to 1e16
+while the point was primal-feasible.
+
+**Fix:** `lyap_soft_weight = 1.0` in `run.py`.
+
+---
+
+### Root cause 2: `load_data` skips fixed variables — MVs and slacks never loaded (FIXED)
+
+`DynamicModelInterface.load_data` skips fixed variables. MVs are fixed in `Plant.__init__` and
+slacks are fixed after each MPC iteration. After every iteration, the MV unfix/load/refix loop
+in `run_MPC.py` was added so that the plant receives the controller's optimal MV values before
+each plant solve. Slacks are similarly unfixed before the warm-start load, then refixed after.
+
+**Fix:** In `run_MPC.py`, before `plant.interface.load_data(plant_warmstart)`:
+  - Unfix all MVs (`_mv.unfix()`)
+  - Unfix all slacks (`_sv.unfix()`)
+  - Call `load_data`
+  - Re-fix MVs and slacks
+
+---
+
+### Root cause 3: `lyap_slack` DOF in plant (FIXED)
+
+When `lyap_flag=True`, `Plant.__init__` inherited the lyap options and built `lyap_slack` as a
+free `NonNegativeReals` Var with a constant plant objective. This was a spurious DOF.
+
+**Fix:** `plant_options = options.copy(... lyap_flag=False)` in `plant.py`.
+
+---
+
+### Root cause 4: equations_write creates constraints at t=0 — a non-collocation point (FIXED)
+
+This was the deepest root cause, responsible for plant failures at iterations 1+ even after
+MVs/slacks were correctly propagated.
+
+**Background:** In LAGRANGE-RADAU with ncp=3, collocation points are at
+`{0.155051, 0.644949, 1.0}`. `t=0` is NOT a collocation point. `equations_write` runs AFTER
+discretization (necessary because Pyomo's DAE dictionary expansion only works once `m.time` is
+populated). As a result, every `Constraint(m.time, rule=...)` in `equations_write` creates an
+entry at `t=0`, including algebraic-variable definitions such as:
+
+```python
+m.xD2B_def = Constraint(m.time, rule=lambda m, t: m.xD2B[t] == m.x2[41, 2, t])
+```
+
+The `xD2B_def[0]` entry actively constrained `x2[41, 2, 0]` (a differential state var) to equal
+`xD2B[0]` (an algebraic CV fixed at the initialization value). At iteration 0, the initialization
+is consistent so this is harmless. At iteration 1+, the plant IC (state vars at t=0) is updated
+to the plant endpoint, but `xD2B[0]` remains stale (fixed at the IC-solve value, never updated
+because `load_data` skips fixed vars and the plant has no `shift_values_by_time`). IPOPT then
+forced `x2[41, 2, 0]` = the stale `xD2B[0]` value, giving the ODE a **wrong initial condition**
+and causing infeasibility at the horizon endpoint.
+
+**Diagnosis method:** Wrote pprints of both controller post-solve and plant pre-solve to
+`research_files/shifting_behavior/iter00{0,1}_*.txt`. Comparing `xD2B[0]` between controller
+(0.9142, updated by `shift_values_by_time`) and plant (0.8999, stale) revealed the discrepancy.
+
+**Fix — three-part:**
+
+1. **`make_model.py` — `_finite_block_gen`**: After `_model.equations_write(m)`, delete all
+   constraint entries at `t=0`:
+   ```python
+   _t0_del = m.time.first()
+   for _con in m.component_objects(pyo.Constraint):
+       _keys_at_t0 = [_idx for _idx in list(_con.keys())
+                      if (_idx[-1] if isinstance(_idx, tuple) else _idx) == _t0_del]
+       for _idx in _keys_at_t0:
+           del _con[_idx]
+   ```
+
+2. **`make_model.py` — `_fix_initial_conditions_at_t0`**: Simplified entirely. The old function
+   fixed algebraic CVs at t=0 and left the state vars they determined (via equality constraints)
+   free. With no constraints at t=0, this logic is dead. New version simply fixes **all
+   differential state vars at t=0** and nothing else.
+
+3. **`run_MPC.py` — IC loading**: Since all state vars at t=0 are now fixed (no algebraic
+   bypass), `load_data` would skip them all. Both the plant and controller IC loads now use an
+   explicit unfix → load → refix sequence:
+   ```python
+   # For plant:
+   plant.interface.load_data(tf_data)               # warm-start t>0
+   for _sv in plant._model.state_vars: _sv[t0].unfix()
+   plant.interface.load_data(tf_data, time_points=t0_plant)
+   for _sv in plant._model.state_vars: _sv[t0].fix()
+
+   # For controller: same pattern after shift_values_by_time
+   ```
+
+**Result:** All 5 MPC iterations in the ternary distillation lyap example solve optimally.
+Plant constraint violations at numerical precision (~1e-12 to 1e-15) only.
+
+---
+
+### Remaining cleanup items (not done)
+
+- `run_MPC.py` line 140–142: unconditional `pprint` to `model_output.txt` at `i==0` (was `i==10`, moved by prior work); not gated by `debug_flag`.
+- `plant.py` lines 74–75: unconditional `pprint` to `plant_model.txt` in `Plant.__init__`.
+- `run.py`: `num_horizons=5` was set for testing; should be restored to 100 (or intended value) for production runs.
+- The `equations_write` fix is only applied in `_finite_block_gen` (RADAU finite block). The infinite block (`_infinite_block_gen`) uses LAGRANGE-LEGENDRE, where BOTH endpoints (`t=0` and `t=t_last`) are non-collocation points. The same spurious constraint issue could exist there. Not yet investigated.
+
+---
+
+## Lyapunov Soft Constraint & Warm-Start Diagnostics (2026-04-13)
+
+**Branch:** `shifting-behavior`
+
+---
+
+### Problem 1: `_ipopt_warm_solver` settings caused convergence to local infeasibility
+
+The initial warm solver implementation used three extra IPOPT options that backfired:
+
+- `warm_start_init_point = 'yes'` — tells IPOPT to use current primal **and dual** (multiplier)
+  values as the initial iterate.  Pyomo's `ipopt_v2` interface does not pass dual variable values
+  to IPOPT without explicit `Suffix` setup, so IPOPT received zero multipliers.  Starting with
+  zero duals and a small barrier produced a badly conditioned initial search direction.
+- `mu_init = 1e-3` — fine when the warm-started point is nearly feasible, but the Lyapunov
+  constraint violation at the warm-started point grows with each iteration (from `1.27e-7` →
+  `5.00e-1` → `1.91e+01` across the first three MPC steps).  With a barrier that tight, IPOPT
+  couldn't take large enough steps to recover from `inf_pr = 19.1` and converged to a point of
+  local infeasibility after 216 iterations.
+
+**Fix:** removed `warm_start_init_point` and `mu_init` from `_ipopt_warm_solver`.  The primal
+warm start is already fully effective — `shift_values_by_time` places the shifted solution
+directly in the Pyomo model and IPOPT reads those values as its initial iterate automatically.
+`bound_push = 1e-8` / `bound_frac = 1e-8` are retained: they prevent IPOPT from projecting
+bound-constrained variables away from the good warm-started positions at the start of each solve.
+
+---
+
+### Problem 2: Lyapunov constraint violation at the warm-started point
+
+Even with the corrected warm solver the failure persisted, because making the warm solver
+identical to the cold solver also failed at the same iteration.
+
+**Diagnosis — the doubled endpoint:**
+
+After `shift_values_by_time(sampling_time)` the last time point (e.g. `t = 3` in a `[0, 3]`
+horizon) has no `x_old[t + h]` to shift from, so Pyomo keeps the old endpoint value.  The
+Riemann-sum `phi_track` then double-counts that endpoint:
+
+```
+phi_track_warm ≈ cost_opt(t=2) + cost_opt(t=3) + cost_opt(t=3)   [t=3 repeated]
+V_prev          = cost_opt(t=1) + cost_opt(t=2) + cost_opt(t=3)
+```
+
+When the optimal trajectory does not have monotonically decreasing stage costs along the
+horizon (which the economic + Lyapunov objective does not guarantee), `cost_opt(t=3) >
+cost_opt(t=1)` and `phi_track_warm > V_prev`, violating the Lyapunov constraint by the
+full amount at the warm-started point.  For `iter 1 → iter 2`, the violation was measured
+at exactly `+19.1238`, matching IPOPT's reported `inf_pr = 1.91e+01`.
+
+Running without `lyap_flag` confirmed the physics warm start is healthy (initial `inf_pr`
+stays `< 1.2` for all tested iterations).  The Lyapunov constraint is the sole source of
+the large infeasibility.
+
+**Root cause:** with a short finite horizon (`nfe_finite = 3`, `sampling_time = 1`), the
+controller lacks enough foresight to guarantee Lyapunov decrease while also satisfying the
+model physics.  The hard inequality becomes genuinely locally infeasible, and no warm start
+tuning can escape a locally infeasible region.
+
+---
+
+### Fix: `lyap_constraint_type` option
+
+Added three-way control over how the Lyapunov decrease condition is enforced, matching the
+pattern already used by `terminal_constraint_type`.
+
+**`infNMPC_options.py`** — two new fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `lyap_constraint_type` | `'hard'` | `'hard'` = strict inequality (existing behavior, backward compatible); `'soft'` = L1-relaxed with a non-negative slack; `'none'` = infrastructure built, no constraint |
+| `lyap_soft_weight` | `1e4` | Penalty weight on `lyap_slack` when `'soft'` |
+
+**`make_model.py`** — both Lyapunov constraint sites (`_finite_block_gen` for finite-only
+controllers, `_make_infinite_horizon_model` for infinite-horizon) now branch on
+`lyap_constraint_type`:
+- `'hard'`: original `pyo.Constraint` unchanged.
+- `'soft'`: adds `m.lyap_slack` (`NonNegativeReals`, initialize=0) and writes
+  `phi_track - V_prev <= -lyap_delta * first_stage_cost_prev + lyap_slack`.
+- `'none'`: phi_track / V_prev / first_stage_cost_prev infrastructure is still built
+  (so `run_MPC.py`'s parameter updates work), but no constraint or variable is added.
+
+**`controllers.py`** — `_use_soft_lyap` flag added to both `InfiniteHorizonController` and
+`FiniteHorizonController`.  All five objective rules (`custom`, `riemann`, `default` for
+infinite; `custom`, `default` for finite) append
+`+ m.lyap_slack * options.lyap_soft_weight` when the flag is set.
+
+**`examples/lyap_flag_examples/enmpc_ternary_distillation/run.py`** — switched to
+`lyap_constraint_type='soft'`, `lyap_soft_weight=1e4`.
+
+---
+
+### Also done this session
+
+- **`_ipopt_warm_solver`** added to `make_model.py`; `Controller` now uses the cold solver
+  for the initial solve and the warm solver for all subsequent MPC iterations via the
+  `_initialized` flag.
+- **Shift observation files** added to `run_MPC.py` (gated on `debug_flag and i == 0`):
+  `research_files/shifting_behavior/iter000_post_solve.txt` and `iter000_post_shift.txt`.
+  `research_files/` is already in `.gitignore`.
+- **Typo fix:** `optimisation` → `optimization` in docstrings in `controllers.py` and
+  `run_MPC.py`.
+
+---
+
+## Warm-Start Solver for MPC Updates (2026-04-13)
+
+**Branch:** `shifting-behavior`
+
+### Motivation
+
+The MPC loop in `run_MPC.py` already performs a proper shift at each iteration
+(lines 245-246):
+```python
+controller.interface.shift_values_by_time(options.sampling_time)
+controller.interface.load_data(tf_data, time_points=t0_controller)
+```
+This places the shifted previous solution in the model as a natural warm start,
+but the controller was using the same cold-start IPOPT settings for every solve.
+Warm starts benefit from a smaller initial barrier parameter and tighter bound
+handling so IPOPT stays close to the shifted solution.
+
+### Changes
+
+**`infeNMPC/make_model.py`**
+
+- `_ipopt_solver()` — retained as the **cold-start** solver.  Comment placeholders
+  for `bound_push` / `mu_init` removed; settings are now explicit and documented
+  in the new function.
+- `_ipopt_warm_solver()` — **new** function for warm-started MPC updates.  Extra
+  settings vs. cold solver:
+  - `warm_start_init_point = 'yes'` — IPOPT accepts primal/dual values already
+    in the model rather than re-projecting from scratch.
+  - `mu_init = 1e-3` — start barrier near the solution rather than the default
+    0.1.
+  - `bound_push = 1e-8`, `bound_frac = 1e-8` — don't push the starting iterate
+    away from bounds; appropriate when it's already feasible.
+
+**`infeNMPC/controllers.py`**
+
+- `Controller.__init__` — instantiates both `_solver` (cold) and `_warm_solver`.
+  Adds `_initialized = False` flag.
+- `Controller.solve()` — selects solver based on `_initialized`:
+  - First call (from `__init__` via subclass): uses cold solver.
+  - All subsequent calls (MPC loop after shift): uses warm solver.
+  Sets `_initialized = True` at end of first successful solve.
+
+---
+
 ## Terminal Constraint Overhaul (2026-04-10)
 
 **Branch:** `fix-terminal-constraints-2`

@@ -36,7 +36,8 @@ class Plant:
     def __init__(self, options: Options):
         self.options = options
         plant_options = options.copy(nfe_finite=1, infinite_horizon=False,
-                                     terminal_constraint_type='none')
+                                     terminal_constraint_type='none',
+                                     lyap_flag=False)
 
         m = pyo.ConcreteModel()
         m = _make_finite_horizon_model(m, plant_options)
@@ -49,6 +50,19 @@ class Plant:
             if options.ncp_finite > 1:
                 getattr(m, f"{var_name}_interpolation_constraints").deactivate()
 
+        # Deactivate interpolation constraints for slack variables (same as MVs).
+        # Do NOT fix them here — DynamicModelInterface.load_data skips fixed
+        # variables, so slacks must remain free when the warm-start is loaded in
+        # run_MPC.py.  After load_data the caller must call sv_var.fix() so that
+        # the plant constraints exactly match the controller's first FE.
+        if hasattr(m, 'slack_index'):
+            for sv_name in m.slack_index:
+                sv_var = getattr(m, sv_name, None)
+                if sv_var is not None and isinstance(sv_var, pyo.Var):
+                    if (options.ncp_finite > 1
+                            and hasattr(m, f"{sv_name}_interpolation_constraints")):
+                        getattr(m, f"{sv_name}_interpolation_constraints").deactivate()
+
         m.obj = pyo.Objective(expr=1)
 
         if plant_options.model_output_dir:
@@ -56,6 +70,9 @@ class Plant:
             os.makedirs(plant_options.model_output_dir, exist_ok=True)
             with open(os.path.join(plant_options.model_output_dir, "plant_model.txt"), "w") as f:
                 m.pprint(ostream=f)
+
+        with open("plant_model.txt", "w") as f:
+            m.pprint(ostream=f)
 
         self._model = m
         self._solver = _ipopt_solver()
