@@ -86,6 +86,8 @@ class Plant:
             if self.options.debug_flag:
                 _report_constraint_violations(self._model, label="plant failure")
             raise
+        if self.options.debug_flag:
+            _report_constraint_violations(self._model, label="plant solve")
 
     def __getattr__(self, name: str):
         # Delegate unknown attribute lookups to the underlying Pyomo model.

@@ -63,8 +63,30 @@ class Options:
         Scalar multiplier applied to the terminal soft-constraint penalty.
         Per-variable weights still come from ``stage_cost_weights``.
         Only used when ``terminal_constraint_type='soft'``.  Default: ``1.0``.
-    custom_objective : bool
-        If True, use the model's ``custom_objective`` economic stage cost.
+    objective : str
+        Controls the MPC stage cost and steady-state operating point:
+
+        * ``'economic'`` — use the model's ``custom_objective()`` function as
+          the stage cost.  The steady-state operating point is found by
+          minimising that economic cost.  Requires ``custom_objective`` to be
+          defined in the model file.
+        * ``'tracking'`` — use a quadratic tracking cost.  The setpoints used
+          as tracking targets are controlled by ``tracking_setpoint``.
+
+        Default: ``'economic'``.
+    tracking_setpoint : str
+        How setpoints for the quadratic tracking cost are determined.  Only
+        relevant when ``objective='tracking'``.
+
+        * ``'model'`` — use ``m.setpoints`` as declared in the model file.
+          The steady-state operating point is found by minimising the distance
+          to those setpoints.
+        * ``'economic'`` — find the steady-state operating point by minimising
+          the model's ``custom_objective()`` function, then use the resulting
+          values as the tracking targets.  Requires ``custom_objective`` to be
+          defined in the model file.
+
+        Default: ``'model'``.
     terminal_cost_riemann : bool
         If True, approximate the terminal cost with a Riemann sum.
     input_suppression : bool
@@ -73,6 +95,14 @@ class Options:
         Weighting factor for the move-suppression penalty.
     stage_cost_weights : list of float
         Per-variable weights for the quadratic tracking stage cost.
+    slack_penalty_weight : float
+        Weight on soft-constraint slack variables (``m.slack_index``) in the
+        tracking objective.  Added to the stage cost as
+        ``slack_penalty_weight * Σ eps_var`` summed over all entries of every
+        variable named in ``m.slack_index``.  Only applied when
+        ``objective='tracking'``; ignored for ``objective='economic'`` since
+        ``custom_objective`` is expected to include its own slack penalty.
+        Set to 0 to disable.  Default: ``1e4``.
     gamma : float or None
         Time-compression parameter for the infinite-horizon transformation.
         If ``None`` (the default), gamma is chosen automatically so that the
@@ -148,7 +178,8 @@ class Options:
     terminal_constraint_type: str = 'hard'
     terminal_constraint_variables: str = 'cvmv'
     terminal_soft_weight: float = 1.0
-    custom_objective: bool = True
+    objective: str = 'economic'
+    tracking_setpoint: str = 'model'
     initialize_with_initial_data: bool = False
     terminal_cost_riemann: bool = False
     initialization_assist: bool = False
@@ -160,6 +191,7 @@ class Options:
 
     # Cost function parameters
     stage_cost_weights: List[float] = field(default_factory=lambda: [1.0, 1.0, 1 / 600])
+    slack_penalty_weight: float = 1e4
     gamma: Optional[float] = None
     beta: float = 1.0
 

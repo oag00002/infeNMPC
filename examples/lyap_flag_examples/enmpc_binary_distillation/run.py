@@ -37,7 +37,7 @@ options = Options.for_model_module(
     # ---- Controller settings ----
     infinite_horizon=True,
     terminal_constraint_type='hard',
-    custom_objective=True,
+    objective='economic',
     input_suppression=True,
     input_suppression_factor=0.5e5,
     # ---- Cost function ----

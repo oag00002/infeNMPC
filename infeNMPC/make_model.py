@@ -32,6 +32,7 @@ from .tools.collocation_tools import (
     _lagrange_coeffs_at_endpoint,
 )
 from .tools.initialization_tools import _check_ic_consistency, _build_ic_data
+from .tools.debug_tools import _report_constraint_violations
 
 
 # ---------------------------------------------------------------------------
@@ -233,9 +234,9 @@ def _solve_steady_state_model(m, target, options, label="ss"):
     """
     Solve the steady-state model and return data at the initial time point.
 
-    When ``options.custom_objective`` is True and no target is supplied, the
-    objective is the average of the user-supplied stage cost at ``t=0`` and
-    ``t=1``.  Otherwise a standard penalty-from-target objective is used.
+    When *target* is ``None``, the objective is the average of the model's
+    ``custom_objective`` stage cost at ``t=0`` and ``t=1`` (economic SS solve).
+    Otherwise a standard penalty-from-target objective is used.
 
     Parameters
     ----------
@@ -254,7 +255,7 @@ def _solve_steady_state_model(m, target, options, label="ss"):
     """
     ss_interface = DynamicModelInterface(m, m.time)
 
-    if options.custom_objective and target is None:
+    if target is None:
         custom_objective = _get_model(options).custom_objective
         cost_fn = custom_objective(m, options)
 
@@ -277,7 +278,14 @@ def _solve_steady_state_model(m, target, options, label="ss"):
 
     solver = _ipopt_solver()
     results = solver.solve(m, tee=options.tee_flag)
-    _check_optimal(results, "steady-state")
+    try:
+        _check_optimal(results, "steady-state")
+    except RuntimeError:
+        if options.debug_flag:
+            _report_constraint_violations(m, label=f"{label} steady-state failure")
+        raise
+    if options.debug_flag:
+        _report_constraint_violations(m, label=f"{label} steady-state")
 
     m.ss_obj_value = pyo.value(m.objective)
 
@@ -308,10 +316,13 @@ def _make_infinite_horizon_model(m, options):
     m_ss = pyo.ConcreteModel()
     m_ss = _make_steady_state_model(m_ss, options)
 
-    m_ss_target = None if options.custom_objective else ScalarData({
-        _get_variable_key_for_data(m_ss, var): pyo.value(m_ss.setpoints[var])
-        for var in m_ss.setpoints.index_set()
-    })
+    if options.objective == 'economic' or options.tracking_setpoint == 'economic':
+        m_ss_target = None
+    else:
+        m_ss_target = ScalarData({
+            _get_variable_key_for_data(m_ss, var): pyo.value(m_ss.setpoints[var])
+            for var in m_ss.setpoints.index_set()
+        })
 
     print('Solving Steady State Model')
     steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options, label="ss")
@@ -333,7 +344,7 @@ def _make_infinite_horizon_model(m, options):
     m.finite_block.steady_state_values = steady_state_values
     m.infinite_block.steady_state_values = steady_state_values
 
-    if options.custom_objective:
+    if options.objective == 'economic':
         m.finite_block.ss_obj_value = m_ss.ss_obj_value
         m.infinite_block.ss_obj_value = m_ss.ss_obj_value
 
@@ -399,10 +410,13 @@ def _make_finite_horizon_model(m, options):
     m_ss = pyo.ConcreteModel()
     m_ss = _make_steady_state_model(m_ss, options)
 
-    m_ss_target = None if options.custom_objective else ScalarData({
-        _get_variable_key_for_data(m_ss, var): pyo.value(m_ss.setpoints[var])
-        for var in m_ss.setpoints.index_set()
-    })
+    if options.objective == 'economic' or options.tracking_setpoint == 'economic':
+        m_ss_target = None
+    else:
+        m_ss_target = ScalarData({
+            _get_variable_key_for_data(m_ss, var): pyo.value(m_ss.setpoints[var])
+            for var in m_ss.setpoints.index_set()
+        })
 
     steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options, label="ss")
 
@@ -417,7 +431,8 @@ def _make_finite_horizon_model(m, options):
 
     print('Writing Finite Horizon Model')
 
-    m.ss_obj_value = m_ss.ss_obj_value
+    if options.objective == 'economic':
+        m.ss_obj_value = m_ss.ss_obj_value
     m.steady_state_values = steady_state_values
     m = _finite_block_gen(m, options)
 
@@ -689,7 +704,7 @@ def _infinite_block_gen(m, options):
         )
         c = options.stage_cost_weights
 
-        if options.custom_objective:
+        if options.objective == 'economic':
             custom_objective = _model.custom_objective
             cost_fn = custom_objective(m, options)
 
@@ -927,7 +942,7 @@ if __name__ == '__main__':
         nfe_finite=3,
         ncp_finite=3,
         infinite_horizon=False,
-        custom_objective=True,
+        objective='economic',
         tee_flag=True,
         stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     )

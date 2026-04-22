@@ -14,6 +14,20 @@ MVs:    VB1, LT1, D1, B1 (Column 1); VB2, LT2, D2, B2 (Column 2)
 CVs:    xD1A (A purity in D1), xD2B (B purity in D2), xC (C purity in B2)
 Objective: minimize feed + energy cost minus product revenue
            cost = pF*F + pV*(VB1+VB2) - pA*D1 - pB*D2 - pC*B2
+
+Slack variables match column2_dynamic_soft.mod from the AMPL reference:
+  x1_eps[tray,comp,t]  -- composition lower-bound slacks (also used for xD1A purity, const45)
+  x2_eps[tray,comp,t]  -- composition lower-bound slacks (also used for xD2B purity, const46)
+  xC_eps[t]            -- xC purity slack (const47, x2ceps in AMPL)
+  M1_eps[tray,t]       -- holdup band slacks Col 1
+  M2_eps[tray,t]       -- holdup band slacks Col 2
+  V1_eps[tray,t]       -- vapor flow lower-bound slacks Col 1 (trays 1-40 active)
+  V2_eps[tray,t]       -- vapor flow lower-bound slacks Col 2 (trays 1-40 active)
+  L1_eps[tray,t]       -- liquid flow lower-bound slacks Col 1 (trays 2-41 active)
+  L2_eps[tray,t]       -- liquid flow lower-bound slacks Col 2 (trays 2-41 active)
+  D1_eps[t], B1_eps[t] -- MV soft-bound slacks Col 1
+  D2_eps[t], B2_eps[t] -- MV soft-bound slacks Col 2
+  (TC eps omitted: no temperature variables in this model)
 """
 import pyomo.environ as pyo
 from pyomo.dae import DerivativeVar
@@ -43,7 +57,17 @@ def variables_initialize(m):
     m.MV_display_names = ["VB_1", "LT_1", "D_1", "B_1", "VB_2", "LT_2", "D_2", "B_2"]
     m.CV_index = pyo.Set(initialize=["xD1A", "xD2B", "xC"])
     m.CV_display_names = ["x_{D1,A}", "x_{D2,B}", "x_{B2,C}"]
-    m.slack_index = pyo.Set(initialize=["xD1A_eps", "xD2B_eps", "xC_eps", "M1_eps", "M2_eps"])
+
+    # Slack variables matching column2_dynamic_soft.mod.
+    # x1_eps/x2_eps serve dual purpose: composition lower-bound AND CV purity (const45/46).
+    m.slack_index = pyo.Set(initialize=[
+        "x1_eps", "x2_eps",
+        "M1_eps", "M2_eps",
+        "V1_eps", "V2_eps",
+        "L1_eps", "L2_eps",
+        "xC_eps",
+        "D1_eps", "B1_eps", "D2_eps", "B2_eps",
+    ])
 
     # ---- System Parameters ----
     m.NT = pyo.Param(initialize=41)   # Number of trays
@@ -108,14 +132,16 @@ def variables_initialize(m):
     # ---- Column 1 Manipulated Variables ----
     m.VB1 = pyo.Var(m.time, initialize=4.008, bounds=(0, 10))   # Boilup
     m.LT1 = pyo.Var(m.time, initialize=3.437, bounds=(0, 10))   # Reflux
-    m.D1 = pyo.Var(m.time, initialize=0.57, bounds=(0, 5))      # Distillate
-    m.B1 = pyo.Var(m.time, initialize=0.83, bounds=(0, 5))      # Bottoms
+    # D1/B1 hard bounds (0,5) anchor SS/IV solves; soft bounds [0,2] added in equations_write.
+    m.D1 = pyo.Var(m.time, initialize=0.57, bounds=(0, 5))
+    m.B1 = pyo.Var(m.time, initialize=0.83, bounds=(0, 5))
 
     # ---- Column 2 Manipulated Variables ----
     m.VB2 = pyo.Var(m.time, initialize=2.404, bounds=(0, 10))   # Boilup
     m.LT2 = pyo.Var(m.time, initialize=2.138, bounds=(0, 10))   # Reflux
-    m.D2 = pyo.Var(m.time, initialize=0.26, bounds=(0, 5))      # Distillate
-    m.B2 = pyo.Var(m.time, initialize=0.56, bounds=(0, 5))      # Bottoms
+    # D2/B2 hard bounds (0,5) anchor SS/IV solves; soft bounds [0,2] added in equations_write.
+    m.D2 = pyo.Var(m.time, initialize=0.26, bounds=(0, 5))
+    m.B2 = pyo.Var(m.time, initialize=0.56, bounds=(0, 5))
 
     # ---- Controlled Variable Algebraic Variables ----
     # Declared as Var (not Expression) so the framework can load/extract data by key.
@@ -124,14 +150,32 @@ def variables_initialize(m):
     m.xD2B = pyo.Var(m.time, initialize=0.9, bounds=(0, 1))  # B purity in Col 2 distillate
     m.xC = pyo.Var(m.time, initialize=0.9, bounds=(0, 1))    # C purity in Col 2 bottoms
 
-    # ---- Slack Variables (soft constraints, ncp=1 via slack_index) ----
-    # CV purity lower bound slacks (one per time point, piecewise-constant)
-    m.xD1A_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
-    m.xD2B_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
-    m.xC_eps   = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
-    # Holdup bound slacks
+    # ---- Slack Variables ----
+    # Composition lower-bound slacks (x1_eps[NT,1,t] also used for xD1A purity const45;
+    # x2_eps[NT,2,t] also used for xD2B purity const46 — matches AMPL x1eps/x2eps).
+    m.x1_eps = pyo.Var(m.tray, m.comp, m.time, initialize=0.0, bounds=(0, None))
+    m.x2_eps = pyo.Var(m.tray, m.comp, m.time, initialize=0.0, bounds=(0, None))
+
+    # Holdup band slacks (existing, unchanged)
     m.M1_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
     m.M2_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
+
+    # Vapor flow lower-bound slacks (V1_lower active for k=1..40; k=41 unconstrained → stays 0)
+    m.V1_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
+    m.V2_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
+
+    # Liquid flow lower-bound slacks (L1_lower active for k=2..41; k=1 unconstrained → stays 0)
+    m.L1_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
+    m.L2_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
+
+    # xC purity slack (x2ceps in AMPL, const47)
+    m.xC_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+
+    # MV soft-bound slacks for D1, B1, D2, B2
+    m.D1_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+    m.B1_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+    m.D2_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+    m.B2_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
 
     # ---- Setpoints for CVs ----
     m.setpoints = pyo.Param(m.CV_index, initialize={
@@ -390,37 +434,75 @@ def equations_write(m):
     m.x2dot_balance = pyo.Constraint(m.tray, m.comp, m.time, rule=x2dot_rule)
 
     # ========================================================================
-    # SOFT CONSTRAINTS (slack variables)
+    # SOFT CONSTRAINTS (slack variables — mirrors column2_dynamic_soft.mod)
     # ========================================================================
 
-    # CV purity lower bounds (soft) — mirrors AMPL const45/46/47
+    # ---- CV Purity Lower Bounds (const45/46/47) ----
+    # x1_eps[41,1,t] and x2_eps[41,2,t] reuse the composition slack at the top tray,
+    # matching the AMPL pattern where x1eps/x2eps serve both purposes.
     m.xD1A_lb = pyo.Constraint(
-        m.time, rule=lambda m, t: m.xD1A[t] >= m.setpoints['xD1A'] - m.xD1A_eps[t]
+        m.time, rule=lambda m, t: m.xD1A[t] >= m.setpoints['xD1A'] - m.x1_eps[41, 1, t]
     )
     m.xD2B_lb = pyo.Constraint(
-        m.time, rule=lambda m, t: m.xD2B[t] >= m.setpoints['xD2B'] - m.xD2B_eps[t]
+        m.time, rule=lambda m, t: m.xD2B[t] >= m.setpoints['xD2B'] - m.x2_eps[41, 2, t]
     )
     m.xC_lb = pyo.Constraint(
         m.time, rule=lambda m, t: m.xC[t] >= m.setpoints['xC'] - m.xC_eps[t]
     )
 
-    # Holdup soft bounds — uniform 0.25/0.75 for all trays, matching AMPL M1lower/M1upper
-    def M1_lower_rule(m, k, t):
-        return m.M1[k, t] >= 0.25 - m.M1_eps[k, t]
+    # ---- Composition Lower Bounds (x1lower / x2lower) ----
+    m.x1_lower = pyo.Constraint(
+        m.tray, m.comp, m.time,
+        rule=lambda m, k, j, t: m.x1[k, j, t] >= -m.x1_eps[k, j, t]
+    )
+    m.x2_lower = pyo.Constraint(
+        m.tray, m.comp, m.time,
+        rule=lambda m, k, j, t: m.x2[k, j, t] >= -m.x2_eps[k, j, t]
+    )
 
-    def M1_upper_rule(m, k, t):
-        return m.M1[k, t] <= 0.75 + m.M1_eps[k, t]
+    # ---- Holdup Soft Bounds (M1lower/upper, M2lower/upper) ----
+    m.M1_lower = pyo.Constraint(m.tray, m.time, rule=lambda m, k, t: m.M1[k, t] >= 0.25 - m.M1_eps[k, t])
+    m.M1_upper = pyo.Constraint(m.tray, m.time, rule=lambda m, k, t: m.M1[k, t] <= 0.75 + m.M1_eps[k, t])
+    m.M2_lower = pyo.Constraint(m.tray, m.time, rule=lambda m, k, t: m.M2[k, t] >= 0.25 - m.M2_eps[k, t])
+    m.M2_upper = pyo.Constraint(m.tray, m.time, rule=lambda m, k, t: m.M2[k, t] <= 0.75 + m.M2_eps[k, t])
 
-    def M2_lower_rule(m, k, t):
-        return m.M2[k, t] >= 0.25 - m.M2_eps[k, t]
+    # ---- Vapor Flow Lower Bounds (V1lower / V2lower, trays 1..40) ----
+    def V1_lower_rule(m, k, t):
+        if k == 41:  # no vapor at condenser
+            return pyo.Constraint.Skip
+        return m.V1[k, t] >= -m.V1_eps[k, t]
 
-    def M2_upper_rule(m, k, t):
-        return m.M2[k, t] <= 0.75 + m.M2_eps[k, t]
+    def V2_lower_rule(m, k, t):
+        if k == 41:
+            return pyo.Constraint.Skip
+        return m.V2[k, t] >= -m.V2_eps[k, t]
 
-    m.M1_lower = pyo.Constraint(m.tray, m.time, rule=M1_lower_rule)
-    m.M1_upper = pyo.Constraint(m.tray, m.time, rule=M1_upper_rule)
-    m.M2_lower = pyo.Constraint(m.tray, m.time, rule=M2_lower_rule)
-    m.M2_upper = pyo.Constraint(m.tray, m.time, rule=M2_upper_rule)
+    m.V1_lower = pyo.Constraint(m.tray, m.time, rule=V1_lower_rule)
+    m.V2_lower = pyo.Constraint(m.tray, m.time, rule=V2_lower_rule)
+
+    # ---- Liquid Flow Lower Bounds (L1lower / L2lower, trays 2..41) ----
+    def L1_lower_rule(m, k, t):
+        if k == 1:  # reboiler: no L1[1] entry
+            return pyo.Constraint.Skip
+        return m.L1[k, t] >= -m.L1_eps[k, t]
+
+    def L2_lower_rule(m, k, t):
+        if k == 1:
+            return pyo.Constraint.Skip
+        return m.L2[k, t] >= -m.L2_eps[k, t]
+
+    m.L1_lower = pyo.Constraint(m.tray, m.time, rule=L1_lower_rule)
+    m.L2_lower = pyo.Constraint(m.tray, m.time, rule=L2_lower_rule)
+
+    # ---- MV Soft Bounds for D1, B1, D2, B2 (lower=0, upper=2, matches AMPL) ----
+    m.D1_lower = pyo.Constraint(m.time, rule=lambda m, t: m.D1[t] >= -m.D1_eps[t])
+    m.D1_upper = pyo.Constraint(m.time, rule=lambda m, t: m.D1[t] <= 2 + m.D1_eps[t])
+    m.B1_lower = pyo.Constraint(m.time, rule=lambda m, t: m.B1[t] >= -m.B1_eps[t])
+    m.B1_upper = pyo.Constraint(m.time, rule=lambda m, t: m.B1[t] <= 2 + m.B1_eps[t])
+    m.D2_lower = pyo.Constraint(m.time, rule=lambda m, t: m.D2[t] >= -m.D2_eps[t])
+    m.D2_upper = pyo.Constraint(m.time, rule=lambda m, t: m.D2[t] <= 2 + m.D2_eps[t])
+    m.B2_lower = pyo.Constraint(m.time, rule=lambda m, t: m.B2[t] >= -m.B2_eps[t])
+    m.B2_upper = pyo.Constraint(m.time, rule=lambda m, t: m.B2[t] <= 2 + m.B2_eps[t])
 
     return m
 
@@ -429,9 +511,10 @@ def custom_objective(m, options):
     """
     Economic stage cost for ternary distillation with slack penalties.
 
-    Objective = economic cost + L1 penalty on soft constraint violations
-        econ    = pF*F + pV*(VB1+VB2) - pA*D1 - pB*D2 - pC*B2
-        penalty = rho * (CV purity slacks + holdup bound slacks)
+    Objective = economic cost + L1 penalty on all soft constraint violations.
+    Penalty structure matches column2_dynamic_soft.mod (penalty_2, penalty_M_TC,
+    penalty_x_y, penalty_V_L aggregates), with rho = 1e4.
+    TC eps omitted (no temperature variables in this model).
     """
     pF  = 1.0    # Feed price
     pV  = 0.008  # Energy price (per unit of boilup)
@@ -448,22 +531,29 @@ def custom_objective(m, options):
             pB * m.D2[t] -
             pC * m.B2[t]
         )
-        cv_penalty = rho * (m.xD1A_eps[t] + m.xD2B_eps[t] + m.xC_eps[t])
-        M_penalty = rho * (
-            sum(m.M1_eps[k, t] for k in m.tray) +
-            sum(m.M2_eps[k, t] for k in m.tray)
+        # penalty_2: MV bound slacks
+        pen_mv = m.D1_eps[t] + m.B1_eps[t] + m.D2_eps[t] + m.B2_eps[t]
+        # penalty_M_TC: holdup slacks (TC omitted)
+        pen_M = sum(m.M1_eps[k, t] + m.M2_eps[k, t] for k in m.tray)
+        # penalty_x_y: composition slacks + xC purity slack
+        pen_x = (
+            m.xC_eps[t] +
+            sum(m.x1_eps[k, j, t] + m.x2_eps[k, j, t] for k in m.tray for j in m.comp)
         )
-        return econ + cv_penalty + M_penalty
+        # penalty_V_L: sum over all tray indices so every V_eps/L_eps entry appears
+        # in the objective (prevents presolve underdetermined warnings for unused indices).
+        pen_VL = sum(
+            m.V1_eps[k, t] + m.V2_eps[k, t] + m.L1_eps[k, t] + m.L2_eps[k, t]
+            for k in m.tray
+        )
+        return econ + rho * (pen_mv + pen_M + pen_x + pen_VL)
 
     return stage_cost
 
 
 # def default_options():
 #     """
-#     Model-level default Options overrides.
-
-#     These are applied by Options.for_model_module() before any caller-supplied
-#     keyword arguments.
+#     Return a dict of Options field overrides to apply as model-level defaults.
 #     """
 #     return {
 #         'num_horizons': 10,
@@ -475,10 +565,9 @@ def custom_objective(m, options):
 #         'ncp_infinite': 3,
 #         'tee_flag': True,
 #         'terminal_constraint_type': 'hard',
-#         'custom_objective': True,
+#         'objective': 'economic',
 #         'input_suppression': True,
 #         'input_suppression_factor': 1.0e3,
-#         # Weights order: [xD1A, xD2B, xC, VB1, LT1, D1, B1, VB2, LT2, D2, B2]
 #         'stage_cost_weights': [1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
 #         'gamma': 0.05,
 #         'beta': 1.0,

@@ -163,11 +163,6 @@ def mpc_loop(options: Options):
             with open(os.path.join(_shift_obs_dir, f"iter{i:03d}_post_solve.txt"), "w") as f:
                 controller.pprint(ostream=f)
 
-        if options.debug_flag:
-            _report_constraint_violations(
-                controller._model, label=f"controller iteration {i}"
-            )
-
         # Update Lyapunov stability constraint parameters for next iteration
         if options.lyap_flag:
             # V_prev / first_stage_cost_prev live on controller._model in both cases.

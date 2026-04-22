@@ -1,5 +1,128 @@
 # Next Tasks
 
+## Tracking Objective: Slack Penalty & AMPL-Consistent Weights (2026-04-21)
+
+**Branch:** `fix-tracking`
+
+### Motivation
+
+When `objective='tracking'`, the model's soft-constraint slack variables (`m.slack_index`) had
+no penalty in the objective — they were free non-negative variables with zero cost. IPOPT could
+drive them to any value to satisfy the soft constraints without any resistance. In the AMPL
+reference (`double_col_dyn.run`, `column2_dynamic_soft.mod`), all slack variables are penalised
+with `rho = 10^4` in the objective.
+
+### Changes
+
+**`infNMPC_options.py`** — new field:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `slack_penalty_weight` | `1e4` | Weight on `m.slack_index` slack vars in the tracking objective. Only applied when `objective='tracking'`; economic objective handles its own penalties via `custom_objective`. Set to 0 to disable. |
+
+**`controllers.py`** — all three tracking objective branches (`FiniteHorizonController` tracking,
+`InfiniteHorizonController` Riemann tracking, `InfiniteHorizonController` default tracking) now
+append a slack penalty term when `m.slack_index` exists and `slack_penalty_weight > 0`:
+
+```python
+stage_cost += slack_penalty_weight * sum(
+    getattr(m, sv_name)[idx]
+    for sv_name in m.slack_index
+    for idx in getattr(m, sv_name).index_set()
+)
+```
+
+All slack var indices are included (no t=0 exclusion needed — with `clean_model='delete'` and
+RADAU, t=0 entries are absent from discretised Vars). For the `InfiniteHorizonController`,
+`m.finite_block.slack_index` is used since slack vars live on the finite block.
+
+**`examples/lyap_flag_examples/enmpc_ternary_distillation/run.py`** — weights updated to match
+AMPL `double_col_dyn.run` exactly:
+- `stage_cost_weights=[10, 10, 10, 1, 1, 1, 1, 1, 1, 1, 1]` — AMPL `state_w=10` for CVs
+  (xD1A, xD2B, xC are tray compositions, same category as x1/x2/M state vars in AMPL),
+  `cont_w=1` for MVs (VB1, LT1, D1, B1, VB2, LT2, D2, B2)
+- `slack_penalty_weight=1e4` — AMPL `rho = 10^4`
+- `terminal_soft_weight=1e4` — AMPL `rho * termeps`
+- `nfe_finite=3` — shorter horizon than AMPL's 25 FEs (for faster testing)
+- `num_horizons=100` — more MPC iterations than AMPL's K=25 (for more results)
+
+---
+
+## `objective` / `tracking_setpoint` Options Refactor (2026-04-21)
+
+**Branch:** `main`
+
+Replaced the boolean `custom_objective` option with two new string options that together
+cover the same cases and add a new one.
+
+---
+
+### Motivation
+
+`custom_objective=True/False` conflated two independent decisions:
+1. **What is the MPC stage cost?** (economic function vs. quadratic tracking)
+2. **Where do the tracking setpoints come from?** (model file vs. economic optimum)
+
+The new options separate these concerns and expose the previously impossible combination:
+track a quadratic cost toward the *economically optimal* steady state (useful when the
+economic objective defines a natural operating point but the controller should use a
+smooth quadratic stage cost rather than the raw economic function).
+
+---
+
+### New options (`infNMPC_options.py`)
+
+| Field | Default | Meaning |
+|---|---|---|
+| `objective` | `'economic'` | `'economic'` = use model's `custom_objective()` as stage cost; `'tracking'` = quadratic tracking |
+| `tracking_setpoint` | `'model'` | Only when `objective='tracking'`: `'model'` = use `m.setpoints`; `'economic'` = solve SS with `custom_objective()`, use result as tracking target |
+
+`custom_objective: bool` is removed entirely.
+
+---
+
+### Mapping from old to new
+
+| Old | New |
+|---|---|
+| `custom_objective=True` | `objective='economic'` |
+| `custom_objective=False` | `objective='tracking'` (default `tracking_setpoint='model'`) |
+| *(impossible before)* | `objective='tracking', tracking_setpoint='economic'` |
+
+---
+
+### Code changes
+
+**`infNMPC_options.py`** — replaced `custom_objective` field; added `objective` and
+`tracking_setpoint` with full docstrings.
+
+**`make_model.py`**:
+- `_solve_steady_state_model`: condition simplified to `if target is None:` — always uses
+  economic SS objective when no target is supplied (target is None for both
+  `objective='economic'` and `tracking_setpoint='economic'`).
+- `_make_infinite_horizon_model` / `_make_finite_horizon_model`: `m_ss_target` is `None`
+  when `objective='economic'` or `tracking_setpoint='economic'`; `ScalarData(setpoints)`
+  otherwise. `ss_obj_value` is only stored on blocks when `objective='economic'` (the only
+  case where it is referenced in the controller objective).
+- `_infinite_block_gen._add_dphidt`: phi ODE branches on `options.objective == 'economic'`.
+
+**`controllers.py`**: both `InfiniteHorizonController` and `FiniteHorizonController`
+objective branches gate on `options.objective == 'economic'`.
+
+**All run scripts** (9 examples + `live_plot_examples/enmpc_cstr.py` + `tests/run_ternary_lyap.py`)
+updated.
+
+---
+
+### `enmpc_ternary_distillation` run.py updated to new combination
+
+The lyap_flag_examples ternary distillation run.py was updated to use
+`objective='tracking', tracking_setpoint='economic'` — the new capability.
+This finds the economically optimal SS operating point, then runs a finite-horizon
+quadratic tracking controller toward it. `lyap_flag=False` in this configuration.
+
+---
+
 ## Plant Squareness & Warm-Start (2026-04-15) — RESOLVED
 
 **Branch:** `shifting-behavior`

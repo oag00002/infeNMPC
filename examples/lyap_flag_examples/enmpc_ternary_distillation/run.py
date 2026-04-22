@@ -38,15 +38,19 @@ options = Options.for_model_module(
     ncp_infinite=3,
     # ---- Controller settings ----
     terminal_constraint_type='hard',
-    custom_objective=False,
+    terminal_soft_weight=1e4,   # rho in AMPL: penalises termeps
+    objective='economic',
+    tracking_setpoint='economic',
     terminal_cost_riemann=False,
     initialize_with_initial_data=False,
     initialization_assist=False,
     input_suppression=False,
     input_suppression_factor=1.0e3,
     # ---- Cost function ----
+    # Weights match AMPL double_col_dyn.run: state_w=10 for CVs, cont_w=1 for MVs
     # Weights order: [xD1A, xD2B, xC, VB1, LT1, D1, B1, VB2, LT2, D2, B2]
-    stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    stage_cost_weights=[10.0, 10.0, 10.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    slack_penalty_weight=1e4,   # rho in AMPL: penalises all eps slack vars
     beta=1.0,
     # ---- Output ----
     tee_flag=False,
@@ -59,9 +63,9 @@ options = Options.for_model_module(
     disturb_seeded=True,
     # ---- Lyapunov stability constraint ----
     lyap_flag=False,
-    lyap_delta=0.01,
+    lyap_delta=0.5,
     lyap_constraint_type='soft',
-    lyap_soft_weight=1.0,
+    lyap_soft_weight=1e4,   # rho in AMPL: penalises desceps
     # ---- Debugging ----
     debug_flag=True,
 )

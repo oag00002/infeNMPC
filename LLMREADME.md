@@ -84,7 +84,8 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `infinite_horizon` | `True` | Use infinite-horizon vs. finite-horizon controller |
 | `nfe_infinite` | `3` | Finite elements in infinite-horizon block |
 | `ncp_infinite` | `3` | Collocation points per element (infinite block) |
-| `custom_objective` | `True` | Use model's `custom_objective()` economic cost |
+| `objective` | `'economic'` | `'economic'` = use model's `custom_objective()` as stage cost; `'tracking'` = quadratic tracking cost |
+| `tracking_setpoint` | `'model'` | Only used when `objective='tracking'`: `'model'` = use `m.setpoints`; `'economic'` = solve SS with `custom_objective()`, track that optimum |
 | `terminal_constraint_type` | `'hard'` | `'hard'` = equality at terminal time; `'soft'` = quadratic penalty; `'none'` = disabled |
 | `terminal_constraint_variables` | `'cvmv'` | Which variables to constrain: `'cv'`, `'mv'`, or `'cvmv'` |
 | `terminal_soft_weight` | `1.0` | Scalar multiplier on soft-constraint penalty (per-var weights from `stage_cost_weights`) |
@@ -380,9 +381,9 @@ For each state variable: `finite_block.var[t_end] == infinite_block.var[t_start]
 1. Calls `_make_infinite_horizon_model`
 2. Sets `m.finite_block.stage_cost_index = CV_index + MV_index`
 3. Builds objective (one of three modes):
-   - **custom_objective**: `Σ_t [stage_cost(t) - ss_obj_value]` over finite elements + `beta/sampling_time * phi[τ=1]`
+   - **economic** (`objective='economic'`): `Σ_t [stage_cost(t) - ss_obj_value]` over finite elements + `beta/sampling_time * phi[τ=1]`
    - **terminal_cost_riemann**: quadratic stage cost + Riemann sum over infinite block
-   - **standard quadratic**: quadratic stage cost + `beta/sampling_time * phi[τ=1]`
+   - **tracking** (`objective='tracking'`): quadratic stage cost + `beta/sampling_time * phi[τ=1]`
 4. Dumps model to `model_output.txt` (always, at construction time)
 5. Performs initial solve
 
@@ -633,7 +634,7 @@ run.py:
     nfe_finite=2, ncp_finite=1,
     nfe_infinite=5, ncp_infinite=1,
     infinite_horizon=True, terminal_constraint_type='none',
-    custom_objective=True,
+    objective='economic',
     stage_cost_weights=[1, 1, 1/600], beta=1,
     lyap_flag=True, lyap_delta=0.01,
     save_data=True, save_figure=True,
@@ -661,17 +662,17 @@ ternary_distillation_model.py:
   custom_objective: minimize feed + energy cost minus product revenue
   slack_index: ["xD1A_eps", "xD2B_eps", "xC_eps", "M1_eps", "M2_eps"]
 
-run.py (lyap_flag_examples version, confirmed working as of 2026-04-15):
+run.py (lyap_flag_examples version, as of 2026-04-21):
   options = Options.for_model_module(ternary_distillation_model,
-    num_horizons=5,         # set to 5 for testing; restore to 10+ for production
+    num_horizons=100,
     sampling_time=1,
-    nfe_finite=1, ncp_finite=3,
+    nfe_finite=3, ncp_finite=3,
     infinite_horizon=False,
-    custom_objective=True,
-    lyap_flag=True, lyap_delta=0.01,
-    lyap_constraint_type='soft', lyap_soft_weight=1.0,
+    objective='tracking', tracking_setpoint='economic',
     terminal_constraint_type='soft',
-    debug_flag=True, safe_run=True, tee_flag=True,
+    stage_cost_weights=[1e4, 1e4, 1e4, 1, 1, 1, 1, 1, 1, 1, 1],
+    lyap_flag=False,
+    debug_flag=True,
   )
 ```
 
