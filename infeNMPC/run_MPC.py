@@ -171,9 +171,10 @@ def mpc_loop(options: Options):
             lyap_block = controller
             if options.infinite_horizon:
                 stage_block = controller.finite_block
+                lyap_beta = getattr(options, 'lyap_beta', 1.0)
                 V_current = (
                     pyo.value(controller.finite_block.phi_track)
-                    + pyo.value(
+                    + lyap_beta * pyo.value(
                         controller.infinite_block.phi_track[
                             controller.infinite_block.time.last()
                         ]

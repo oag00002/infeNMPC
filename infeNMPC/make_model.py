@@ -361,10 +361,11 @@ def _make_infinite_horizon_model(m, options):
         m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
         tau_last = m.infinite_block.time.last()
         lct = getattr(options, 'lyap_constraint_type', 'hard')
+        lyap_beta = getattr(options, 'lyap_beta', 1.0)
         if lct == 'hard':
             m.lyap_stability_constraint = pyo.Constraint(
                 expr=(
-                    m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
+                    m.finite_block.phi_track + lyap_beta * m.infinite_block.phi_track[tau_last] - m.V_prev
                     <= -options.lyap_delta * m.first_stage_cost_prev
                 )
             )
@@ -372,7 +373,7 @@ def _make_infinite_horizon_model(m, options):
             m.lyap_slack = pyo.Var(initialize=0.0, domain=pyo.NonNegativeReals)
             m.lyap_stability_constraint = pyo.Constraint(
                 expr=(
-                    m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
+                    m.finite_block.phi_track + lyap_beta * m.infinite_block.phi_track[tau_last] - m.V_prev
                     <= -options.lyap_delta * m.first_stage_cost_prev + m.lyap_slack
                 )
             )
@@ -928,66 +929,124 @@ if __name__ == '__main__':
 
     from infeNMPC.infNMPC_options import Options  # type: ignore[import]
 
-    # Load the ternary distillation model from the lyap_flag example.
+    # ---- Binary distillation steady-state check ----
     _example_dir = (
         Path(__file__).parent.parent
-        / 'examples' / 'lyap_flag_examples' / 'enmpc_ternary_distillation'
+        / 'examples' / 'lyap_flag_examples' / 'enmpc_binary_distillation'
     )
     sys.path.insert(0, str(_example_dir))
-    import ternary_distillation_model  # type: ignore[import]  # noqa: E402
+    import binary_distillation_model  # type: ignore[import]  # noqa: E402
 
     options = Options.for_model_module(
-        ternary_distillation_model,
-        sampling_time=1,
+        binary_distillation_model,
+        sampling_time=10,
         nfe_finite=3,
         ncp_finite=3,
         infinite_horizon=False,
         objective='economic',
         tee_flag=True,
-        stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     )
 
-    print('\nBuilding steady-state model for ternary distillation...')
+    print('\nBuilding steady-state model for binary distillation...')
     m_ss = pyo.ConcreteModel()
     m_ss = _make_steady_state_model(m_ss, options)
-    # m_ss.xC.fix(0.95)
-    # m_ss.xD1A.fix(0.95)
-    # m_ss.xD2B.fix(0.95)
 
     print('Solving steady-state model...')
     ss_data = _solve_steady_state_model(m_ss, None, options, label="ss")
 
-    # ---- Report objective sign ----
+    # ---- Report objective value ----
     obj_val = m_ss.ss_obj_value
     print(f'\nSteady-state objective value: {obj_val:.6g}')
-    if obj_val < 0:
-        print('  -> NEGATIVE: revenue > cost (system is profitable at SS optimum)')
-    else:
-        print('  -> POSITIVE: cost > revenue (system loses money at SS optimum)')
 
     # ---- Economic breakdown ----
-    # RADAU nfe=1 ncp=1: single collocation point is at t=1.
+    # RADAU nfe=1 ncp=1: single collocation point is at t=sampling_time.
     t_ss = m_ss.time.last()
-    pF, pV, pA, pB, pC = 1.0, 0.008, 1.0, 2.0, 1.0
+    x_1_val  = pyo.value(m_ss.x[1,  t_ss])
+    x_42_val = pyo.value(m_ss.x[42, t_ss])
+    Qr_val   = pyo.value(m_ss.Qr[t_ss])
+    Qc_val   = pyo.value(m_ss.Qc[t_ss])
+    Rec_val  = pyo.value(m_ss.Rec[t_ss])
 
-    F_val   = pyo.value(m_ss.F)
-    VB1_val = pyo.value(m_ss.VB1[t_ss])
-    VB2_val = pyo.value(m_ss.VB2[t_ss])
-    D1_val  = pyo.value(m_ss.D1[t_ss])
-    D2_val  = pyo.value(m_ss.D2[t_ss])
-    B2_val  = pyo.value(m_ss.B2[t_ss])
-    xD1A    = pyo.value(m_ss.xD1A[t_ss])
-    xD2B    = pyo.value(m_ss.xD2B[t_ss])
-    xC      = pyo.value(m_ss.xC[t_ss])
+    # ---- Purity slack check (should both be 0 — fixed during SS solve) ----
+    eps_top = pyo.value(m_ss.x_top_eps[t_ss])
+    eps_bot = pyo.value(m_ss.x_bot_eps[t_ss])
 
-    feed_cost   = pF * F_val
-    energy_cost = pV * (VB1_val + VB2_val)
-    revenue     = pA * D1_val + pB * D2_val + pC * B2_val
+    rho = 1e4
+    stage_cost_val = Qr_val * 1e1 + Qc_val + rho * (eps_top + eps_bot)
 
-    print('\nEconomic breakdown at SS optimum (t = t_last):')
-    print(f'  Feed cost    pF*F             = {feed_cost:.4f}')
-    print(f'  Energy cost  pV*(VB1+VB2)     = {pV}*({VB1_val:.4f} + {VB2_val:.4f}) = {energy_cost:.4f}')
-    print(f'  Revenue      pA*D1+pB*D2+pC*B2 = {pA*D1_val:.4f} + {pB*D2_val:.4f} + {pC*B2_val:.4f} = {revenue:.4f}')
-    print(f'  Net profit rate (revenue - cost) = {revenue - feed_cost - energy_cost:.4f} $/h')
-    print(f'  Objective (cost - revenue)       = {feed_cost + energy_cost - revenue:.4f}')
-    print(f'\nPurity CVs: xD1A={xD1A:.4f}  xD2B={xD2B:.4f}  xC={xC:.4f}')
+    print('\nSteady-state operating point:')
+    print(f'  Qr  = {Qr_val:.6f}  (reboiler duty, MJ/h)')
+    print(f'  Rec = {Rec_val:.6f}  (reflux ratio)')
+    print(f'  Qc  = {Qc_val:.6f}  (condenser duty, MJ/h)')
+    print(f'\nPurity at SS:')
+    print(f'  Distillate methanol   x[42] = {x_42_val:.6f}  (target >= 0.99)')
+    print(f'  Bottoms n-propanol 1-x[ 1] = {1 - x_1_val:.6f}  (target >= 0.99)')
+    print(f'\nPurity slacks (should be 0 — fixed during SS solve):')
+    print(f'  x_top_eps[t_ss] = {eps_top:.2e}')
+    print(f'  x_bot_eps[t_ss] = {eps_bot:.2e}')
+    print(f'\nStage cost at SS = {stage_cost_val:.6f}')
+    print(f'  (= 10*Qr + Qc + rho*(x_top_eps + x_bot_eps))')
+
+    # ---- Ternary distillation steady-state check (commented out) ----
+    # _example_dir = (
+    #     Path(__file__).parent.parent
+    #     / 'examples' / 'lyap_flag_examples' / 'enmpc_ternary_distillation'
+    # )
+    # sys.path.insert(0, str(_example_dir))
+    # import ternary_distillation_model  # type: ignore[import]  # noqa: E402
+    #
+    # options = Options.for_model_module(
+    #     ternary_distillation_model,
+    #     sampling_time=1,
+    #     nfe_finite=3,
+    #     ncp_finite=3,
+    #     infinite_horizon=False,
+    #     objective='economic',
+    #     tee_flag=True,
+    #     stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    # )
+    #
+    # print('\nBuilding steady-state model for ternary distillation...')
+    # m_ss = pyo.ConcreteModel()
+    # m_ss = _make_steady_state_model(m_ss, options)
+    # # m_ss.xC.fix(0.95)
+    # # m_ss.xD1A.fix(0.95)
+    # # m_ss.xD2B.fix(0.95)
+    #
+    # print('Solving steady-state model...')
+    # ss_data = _solve_steady_state_model(m_ss, None, options, label="ss")
+    #
+    # # ---- Report objective sign ----
+    # obj_val = m_ss.ss_obj_value
+    # print(f'\nSteady-state objective value: {obj_val:.6g}')
+    # if obj_val < 0:
+    #     print('  -> NEGATIVE: revenue > cost (system is profitable at SS optimum)')
+    # else:
+    #     print('  -> POSITIVE: cost > revenue (system loses money at SS optimum)')
+    #
+    # # ---- Economic breakdown ----
+    # # RADAU nfe=1 ncp=1: single collocation point is at t=1.
+    # t_ss = m_ss.time.last()
+    # pF, pV, pA, pB, pC = 1.0, 0.008, 1.0, 2.0, 1.0
+    #
+    # F_val   = pyo.value(m_ss.F)
+    # VB1_val = pyo.value(m_ss.VB1[t_ss])
+    # VB2_val = pyo.value(m_ss.VB2[t_ss])
+    # D1_val  = pyo.value(m_ss.D1[t_ss])
+    # D2_val  = pyo.value(m_ss.D2[t_ss])
+    # B2_val  = pyo.value(m_ss.B2[t_ss])
+    # xD1A    = pyo.value(m_ss.xD1A[t_ss])
+    # xD2B    = pyo.value(m_ss.xD2B[t_ss])
+    # xC      = pyo.value(m_ss.xC[t_ss])
+    #
+    # feed_cost   = pF * F_val
+    # energy_cost = pV * (VB1_val + VB2_val)
+    # revenue     = pA * D1_val + pB * D2_val + pC * B2_val
+    #
+    # print('\nEconomic breakdown at SS optimum (t = t_last):')
+    # print(f'  Feed cost    pF*F             = {feed_cost:.4f}')
+    # print(f'  Energy cost  pV*(VB1+VB2)     = {pV}*({VB1_val:.4f} + {VB2_val:.4f}) = {energy_cost:.4f}')
+    # print(f'  Revenue      pA*D1+pB*D2+pC*B2 = {pA*D1_val:.4f} + {pB*D2_val:.4f} + {pC*B2_val:.4f} = {revenue:.4f}')
+    # print(f'  Net profit rate (revenue - cost) = {revenue - feed_cost - energy_cost:.4f} $/h')
+    # print(f'  Objective (cost - revenue)       = {feed_cost + energy_cost - revenue:.4f}')
+    # print(f'\nPurity CVs: xD1A={xD1A:.4f}  xD2B={xD2B:.4f}  xC={xC:.4f}')

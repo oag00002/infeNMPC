@@ -29,24 +29,31 @@ options = Options.for_model_module(
     num_horizons=25,
     sampling_time=10,
     # ---- Finite-horizon discretization ----
-    nfe_finite=2,
+    nfe_finite=3,
     ncp_finite=3,
     # ---- Infinite-horizon discretization ----
+    infinite_horizon=False,
     nfe_infinite=3,
     ncp_infinite=3,
     # ---- Controller settings ----
-    infinite_horizon=True,
-    terminal_constraint_type='hard',
+    terminal_constraint_type='none',
     objective='economic',
-    input_suppression=True,
-    input_suppression_factor=0.5e5,
     # ---- Cost function ----
     stage_cost_weights=[1e5, 1e3, 1e2, 1e2],
-    beta=1.2,
+    beta=1.0,
     # ---- Output ----
     tee_flag=False,
+    safe_run=False,
     save_data=True,
     save_figure=True,
+    # ---- Lyapunov stability constraint ----
+    lyap_flag=True,
+    lyap_delta=1.0,
+    lyap_constraint_type='hard',
+    lyap_soft_weight=1e4,   # rho in AMPL: penalises desceps
+    lyap_beta=1.2,
+    # ---- Debugging ----
+    debug_flag=True,
 )
 
 if __name__ == '__main__':

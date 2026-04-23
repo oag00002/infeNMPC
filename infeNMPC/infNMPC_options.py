@@ -200,6 +200,7 @@ class Options:
     lyap_delta: float = 0.01
     lyap_constraint_type: str = 'hard'
     lyap_soft_weight: float = 1e4
+    lyap_beta: float = 1.2
 
     # Display / data-output options
     safe_run: bool = False
