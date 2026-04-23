@@ -62,8 +62,8 @@ options = Options.for_model_module(
     disturb_distribution='normal',
     disturb_seeded=True,
     # ---- Lyapunov stability constraint ----
-    lyap_flag=False,
-    lyap_delta=0.5,
+    lyap_flag=True,
+    lyap_delta=1.0,
     lyap_constraint_type='soft',
     lyap_soft_weight=1e4,   # rho in AMPL: penalises desceps
     # ---- Debugging ----
