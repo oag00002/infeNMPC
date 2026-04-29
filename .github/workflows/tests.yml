@@ -39,6 +39,9 @@ jobs:
         if: steps.cache_idaes.outputs.cache-hit != 'true'
         run: idaes get-extensions --verbose
 
+      - name: Add IDAES extensions to PATH
+        run: echo "$HOME/.idaes/extensions" >> $GITHUB_PATH
+
       # ------------------------------------------------------------------
       # Install the forked Pyomo that adds clean_model='delete' to the DAE
       # collocation transform.  The fork is at oag00002/pyomo, branch
