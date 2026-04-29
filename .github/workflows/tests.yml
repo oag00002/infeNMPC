@@ -50,17 +50,16 @@ jobs:
           echo "$IDAES_BIN" >> $GITHUB_PATH
           echo "LD_LIBRARY_PATH=$IDAES_BIN${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> $GITHUB_ENV
 
+      - name: Install remaining dependencies and package
+        run: pip install tqdm pytest -e .
+
       # ------------------------------------------------------------------
-      # Install the forked Pyomo that adds clean_model='delete' to the DAE
-      # collocation transform.  The fork is at oag00002/pyomo, branch
-      # mpc-rewrite.  This MUST come after idaes-pse so pip does not
-      # overwrite it with the PyPI Pyomo.
+      # Install the forked Pyomo LAST so pip install -e . (which lists
+      # "pyomo" as a dependency) cannot overwrite it with the PyPI version.
+      # The fork adds clean_model='delete' to the DAE collocation transform.
       # ------------------------------------------------------------------
       - name: Install forked Pyomo (oag00002/pyomo@mpc-rewrite)
         run: pip install git+https://github.com/oag00002/pyomo.git@mpc-rewrite
-
-      - name: Install remaining dependencies and package
-        run: pip install tqdm pytest -e .
 
       - name: Run tests
         run: python -m pytest tests/ -q
