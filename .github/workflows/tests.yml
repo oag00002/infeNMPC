@@ -17,6 +17,9 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: Install system dependencies for IPOPT (LAPACK/BLAS)
+        run: sudo apt-get install -y liblapack3 libblas3
+
       # ------------------------------------------------------------------
       # Cache the IDAES solver extensions (~150 MB IPOPT binary with MA57)
       # so subsequent runs skip the download.  The cache key includes the
