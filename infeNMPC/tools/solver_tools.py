@@ -17,7 +17,7 @@ def _clip_to_bounds(model):
     NonNegativeReals slacks when loading data into subsequent models.
     """
     for vd in model.component_data_objects(pyo.Var, active=True, descend_into=True):
-        val = pyo.value(vd)
+        val = pyo.value(vd, exception=False)
         if val is None:
             continue
         if vd.lb is not None and val < vd.lb:

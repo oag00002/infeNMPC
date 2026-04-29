@@ -19,3 +19,14 @@ check-model = "infeNMPC.check_model:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["infeNMPC*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Integration tests that call IPOPT are slow but still run in CI.
+# Use -m "not slow" locally to skip only the longest-running tests.
+markers = [
+    "slow: marks tests as slow (multi-minute IPOPT solves)",
+]
+# Capture output so IPOPT's per-iteration prints don't flood the terminal.
+# Remove -q to see individual test names.
+addopts = "-q"

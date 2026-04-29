@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # ------------------------------------------------------------------
+      # Cache the IDAES solver extensions (~150 MB IPOPT binary with MA57)
+      # so subsequent runs skip the download.  The cache key includes the
+      # idaes-pse version so a package upgrade triggers a fresh download.
+      # ------------------------------------------------------------------
+      - name: Get idaes-pse version for cache key
+        id: idaes_version
+        run: |
+          pip install idaes-pse --quiet
+          echo "version=$(pip show idaes-pse | grep ^Version | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Cache IDAES extensions (IPOPT + MA57)
+        id: cache_idaes
+        uses: actions/cache@v4
+        with:
+          path: ~/.idaes/extensions
+          key: idaes-extensions-${{ runner.os }}-${{ steps.idaes_version.outputs.version }}
+
+      - name: Download IDAES extensions (IPOPT + MA57)
+        if: steps.cache_idaes.outputs.cache-hit != 'true'
+        run: idaes get-extensions --verbose
+
+      # ------------------------------------------------------------------
+      # Install the forked Pyomo that adds clean_model='delete' to the DAE
+      # collocation transform.  The fork is at oag00002/pyomo, branch
+      # mpc-rewrite.  This MUST come after idaes-pse so pip does not
+      # overwrite it with the PyPI Pyomo.
+      # ------------------------------------------------------------------
+      - name: Install forked Pyomo (oag00002/pyomo@mpc-rewrite)
+        run: pip install git+https://github.com/oag00002/pyomo.git@mpc-rewrite
+
+      - name: Install remaining dependencies and package
+        run: pip install tqdm pytest -e .
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
