@@ -61,7 +61,7 @@ jobs:
       - name: Install forked Pyomo (oag00002/pyomo@mpc-rewrite)
         run: |
           pip uninstall pyomo -y
-          pip install --no-deps git+https://github.com/oag00002/pyomo.git@mpc-rewrite
+          pip install --no-deps git+https://github.com/oag00002/pyomo.git@mpc-rewrite-1
           python -c "from pyomo.contrib.mpc import DynamicModelInterface; import inspect; print('clean_model' in inspect.signature(DynamicModelInterface.__init__).parameters)"
 
       - name: Run tests

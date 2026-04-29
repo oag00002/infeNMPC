@@ -24,7 +24,7 @@ idaes get-extensions        # downloads IPOPT + MA57 binaries
 **Step 2 — Install the forked Pyomo:**
 
 ```bash
-pip install git+https://github.com/oag00002/pyomo.git@mpc-rewrite
+pip install git+https://github.com/oag00002/pyomo.git@mpc-rewrite-1
 ```
 
 **Step 3 — Install infeNMPC:**
