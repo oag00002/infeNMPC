@@ -39,12 +39,13 @@ jobs:
         if: steps.cache_idaes.outputs.cache-hit != 'true'
         run: idaes get-extensions --verbose
 
-      - name: Add IDAES extensions to PATH
+      - name: Add IDAES extensions to PATH and LD_LIBRARY_PATH
         run: |
           IDAES_BIN=$(python -c "import idaes; print(idaes.bin_directory)")
           echo "IDAES bin directory: $IDAES_BIN"
-          ls "$IDAES_BIN" | head -5
+          ls "$IDAES_BIN"
           echo "$IDAES_BIN" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=$IDAES_BIN${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> $GITHUB_ENV
 
       # ------------------------------------------------------------------
       # Install the forked Pyomo that adds clean_model='delete' to the DAE
