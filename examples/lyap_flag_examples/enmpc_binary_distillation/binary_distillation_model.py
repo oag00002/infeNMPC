@@ -39,6 +39,14 @@ def variables_initialize(m):
     m.CV_display_names = ["x_1", "T_{29}"]
     m.DV_index = pyo.Set(initialize=["xf"])    # Disturbance variables
 
+    # Purity slack variables: x_top_eps for distillate (x[42] >= 0.99),
+    # x_bot_eps for bottoms ((1-x[1]) >= 0.99).  Fixed to 0 during the SS
+    # solve so specs are enforced there; free during MPC solves with an
+    # objective penalty.
+    m.slack_index = pyo.Set(initialize=["x_top_eps", "x_bot_eps"])
+    m.x_top_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+    m.x_bot_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+
 
     m.Ntray = pyo.Param(initialize=42)
     m.tray = pyo.Set(initialize=range(1, m.Ntray+1))
@@ -391,11 +399,29 @@ def equations_write(m):
     m.Mv_bound = pyo.Constraint(m.tray, m.time, rule=_Mv_bound_rule)
     m.L_bound = pyo.Constraint(m.tray, m.time, rule=_L_bound_rule)
 
+    # Purity soft constraints.
+    # Distillate (tray 42): methanol fraction must be >= 0.99; x_top_eps absorbs any shortfall.
+    # Bottoms  (tray  1):  n-propanol fraction (1-x[1]) must be >= 0.99; x_bot_eps absorbs shortfall.
+    m.distillate_purity_lb = pyo.Constraint(
+        m.time,
+        rule=lambda m, t: m.x[42, t] + m.x_top_eps[t] >= 0.99,
+    )
+    m.bottoms_purity_lb = pyo.Constraint(
+        m.time,
+        rule=lambda m, t: (1 - m.x[1, t]) + m.x_bot_eps[t] >= 0.99,
+    )
+
     return m
 
 
 def custom_objective(m, options):
-    stage_cost = lambda m, t: -(1e2 * (1 - m.x[1,t]) - m.Qr[t] * 1e1 + m.Qc[t])
+    # Minimise energy cost (reboiler steam + condenser cooling water) while
+    # penalising purity shortfalls via slack variables.
+    rho = 1e4
+    stage_cost = lambda m, t: (
+        m.Qr[t] * 1e1 + m.Qc[t]
+        + rho * (m.x_top_eps[t] + m.x_bot_eps[t])
+    )
     return stage_cost
 
 

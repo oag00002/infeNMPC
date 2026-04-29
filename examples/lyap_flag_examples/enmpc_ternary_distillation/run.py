@@ -27,7 +27,7 @@ from infeNMPC import Options, mpc_loop  # noqa: E402
 options = Options.for_model_module(
     ternary_distillation_model,
     # ---- Simulation control ----
-    num_horizons=100,
+    num_horizons=200,
     sampling_time=1,
     # ---- Finite-horizon discretization ----
     nfe_finite=25,
@@ -37,19 +37,22 @@ options = Options.for_model_module(
     nfe_infinite=3,
     ncp_infinite=3,
     # ---- Controller settings ----
-    terminal_constraint_type='hard',
-    custom_objective=False,
+    terminal_constraint_type='soft',
+    terminal_soft_weight=1e4,   # rho in AMPL: penalises termeps
+    objective='economic',
     terminal_cost_riemann=False,
     initialize_with_initial_data=False,
     initialization_assist=False,
     input_suppression=False,
     input_suppression_factor=1.0e3,
     # ---- Cost function ----
-    # Weights order: [xD1A, xD2B, xC, VB1, LT1, D1, B1, VB2, LT2, D2, B2]
-    stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    # Weights match AMPL double_col_dyn.run: state_w=10 for CVs, cont_w=1 for MVs
+    # Weights order: [xD1A, xD2B, xC[], VB1, LT1, D1, B1, VB2, LT2, D2, B2]
+    stage_cost_weights=[10.0, 10.0, 10.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    slack_penalty_weight=1e4,   # rho in AMPL: penalises all eps slack vars
     beta=1.0,
     # ---- Output ----
-    tee_flag=False,
+    tee_flag=True,
     safe_run=False,
     save_data=True,
     save_figure=True,
@@ -58,12 +61,13 @@ options = Options.for_model_module(
     disturb_distribution='normal',
     disturb_seeded=True,
     # ---- Lyapunov stability constraint ----
-    lyap_flag=False,
+    lyap_flag=True,
     lyap_delta=0.01,
     lyap_constraint_type='soft',
-    lyap_soft_weight=1.0,
+    lyap_soft_weight=1e4,   # rho in AMPL: penalises desceps
     # ---- Debugging ----
     debug_flag=True,
+    revive_run=1,
 )
 
 if __name__ == '__main__':

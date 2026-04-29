@@ -40,7 +40,7 @@ options = Options.for_model_module(
     # ---- Controller settings ----
     infinite_horizon=True,
     terminal_constraint_type='none',
-    custom_objective=True,
+    objective='economic',
     # ---- Cost function ----
     stage_cost_weights=[1, 1, 1 / 600],
     beta=1,

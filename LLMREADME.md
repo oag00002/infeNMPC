@@ -84,7 +84,8 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `infinite_horizon` | `True` | Use infinite-horizon vs. finite-horizon controller |
 | `nfe_infinite` | `3` | Finite elements in infinite-horizon block |
 | `ncp_infinite` | `3` | Collocation points per element (infinite block) |
-| `custom_objective` | `True` | Use model's `custom_objective()` economic cost |
+| `objective` | `'economic'` | `'economic'` = use model's `custom_objective()` as stage cost; `'tracking'` = quadratic tracking cost |
+| `tracking_setpoint` | `'model'` | Only used when `objective='tracking'`: `'model'` = use `m.setpoints`; `'economic'` = solve SS with `custom_objective()`, track that optimum |
 | `terminal_constraint_type` | `'hard'` | `'hard'` = equality at terminal time; `'soft'` = quadratic penalty; `'none'` = disabled |
 | `terminal_constraint_variables` | `'cvmv'` | Which variables to constrain: `'cv'`, `'mv'`, or `'cvmv'` |
 | `terminal_soft_weight` | `1.0` | Scalar multiplier on soft-constraint penalty (per-var weights from `stage_cost_weights`) |
@@ -96,6 +97,7 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `lyap_delta` | `0.01` | Required fractional decrease per step (0=inactive, 1=tight) |
 | `lyap_constraint_type` | `'hard'` | `'hard'` = strict inequality constraint; `'soft'` = L1-relaxed via `lyap_slack` Var in objective; `'none'` = infrastructure built, no constraint added |
 | `lyap_soft_weight` | `1e4` | Weight on L1 slack penalty when `lyap_constraint_type='soft'` |
+| `lyap_beta` | `1.2` | Scaling factor on the infinite block's contribution to the Lyapunov value function: `V = finite_block.phi_track + lyap_beta * infinite_block.phi_track[τ=1]`. Values > 1 give extra weight to the cost-to-go beyond the finite horizon; only relevant when `infinite_horizon=True` and `lyap_flag=True`. |
 | `input_suppression` | `False` | Penalize MV increments |
 | `input_suppression_factor` | `1.0` | Weight on move-suppression penalty |
 | `initialize_with_initial_data` | `False` | Spread IC across all time points |
@@ -109,6 +111,7 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `disturb_distribution` | `'normal'` | Disturbance distribution type |
 | `disturb_seeded` | `True` | Use fixed random seed |
 | `debug_flag` | `False` | Print most-violated constraints after every controller solve and on failures |
+| `revive_run` | `0` | Max retry attempts on a failed warm solve using relaxed IPOPT settings (`bound_relax_factor=1e-8`, `tol=1e-6`). `0` = disabled. Not retried for `infeasible` or `maxIterations`. |
 | `dynamic_initial_conditions` | `False` | Use dynamic IC path (fix state vars to `initialize=` values, solve for algebraic vars only) instead of SS-NLP |
 
 ---
@@ -213,7 +216,18 @@ The IC data that gets loaded at t=0 is produced by one of two paths, routed by `
 
 ### Slack Variable Squareness Fix
 
-`_make_steady_state_model(m, options, fix_slacks=True)` gains a `fix_slacks` parameter. When `True` (the default, used for the setpoint SS solve), all variables named in `m.slack_index` are fixed to 0 after `variables_initialize`, making the NLP square. The IV path calls it with `fix_slacks=False` so that infeasible-by-spec starting points are still reachable.
+`_make_steady_state_model(m, options, fix_slacks=True)` gains a `fix_slacks` parameter. When `True` (the default, used for the setpoint SS solve), all variables named in `m.slack_index` **and** `m.spec_slack_index` (if present) are fixed to 0 after `variables_initialize`, making the NLP square. The IV path calls it with `fix_slacks=False` so that infeasible-by-spec starting points are still reachable.
+
+### Two Slack Index Sets
+
+Models may declare one or both of:
+
+| Set | Purpose | Fixed in SS? | Fixed in plant? |
+|-----|---------|-------------|-----------------|
+| `m.slack_index` | Physical relaxation slacks (e.g., holdup bounds `M1_eps`) — allow the controller to violate inequality constraints softly | Yes (`fix_slacks=True`) | No — free, but interpolation constraints deactivated |
+| `m.spec_slack_index` | Product-purity specification slacks (e.g., `xD1A_eps`) — allow the model to start off-spec | Yes (`fix_slacks=True`) | No — free, determined by soft purity constraints |
+
+Both sets are handled identically by `_make_steady_state_model` and `plant.py` (deactivate interpolation constraints; do not fix in plant so `load_data` can propagate values). The distinction is semantic: `spec_slack_index` slacks appear in dedicated product-spec constraints while `slack_index` slacks appear in physical-bound softening constraints. `_report_solver_diagnostics` reports them separately.
 
 ### Important: `m.time` is injected by the framework
 
@@ -342,9 +356,10 @@ This is the most complex file. It builds Pyomo models in stages.
 When `lyap_flag=True` and `infinite_horizon=True`, the combined Lyapunov stability constraint is placed on the parent `ConcreteModel` (not on either block):
 ```python
 m.lyap_stability_constraint:
-    finite_block.phi_track + infinite_block.phi_track[τ=1] - V_prev
+    finite_block.phi_track + lyap_beta * infinite_block.phi_track[τ=1] - V_prev
     <= -lyap_delta * first_stage_cost_prev
 ```
+`lyap_beta` (default `1.2`) scales the infinite block's contribution — the cost-to-go integral over `[sampling_time, ∞)`. The same factor is applied when computing `V_current` in `run_MPC.py` so the stored `V_prev` is always consistent with the constraint.
 `V_prev` and `first_stage_cost_prev` live on the top-level model `m`.
 `finite_block.phi_track` is the Riemann-sum Expression; `infinite_block.phi_track[τ=1]` is the ODE integral.
 
@@ -380,9 +395,9 @@ For each state variable: `finite_block.var[t_end] == infinite_block.var[t_start]
 1. Calls `_make_infinite_horizon_model`
 2. Sets `m.finite_block.stage_cost_index = CV_index + MV_index`
 3. Builds objective (one of three modes):
-   - **custom_objective**: `Σ_t [stage_cost(t) - ss_obj_value]` over finite elements + `beta/sampling_time * phi[τ=1]`
+   - **economic** (`objective='economic'`): `Σ_t [stage_cost(t) - ss_obj_value]` over finite elements + `beta/sampling_time * phi[τ=1]`
    - **terminal_cost_riemann**: quadratic stage cost + Riemann sum over infinite block
-   - **standard quadratic**: quadratic stage cost + `beta/sampling_time * phi[τ=1]`
+   - **tracking** (`objective='tracking'`): quadratic stage cost + `beta/sampling_time * phi[τ=1]`
 4. Dumps model to `model_output.txt` (always, at construction time)
 5. Performs initial solve
 
@@ -456,6 +471,17 @@ Traverses all active constraints (including nested blocks) and prints the `n` mo
 - After a failed controller solve (in `run_MPC.py`, before re-raising)
 - After a failed plant solve (in `plant.py`, before re-raising)
 
+```python
+_report_solver_diagnostics(controller, options, iteration, eps_tol=1e-4)
+```
+
+Per-iteration structured diagnostic summary, called when `options.debug_flag=True` after every successful controller solve. Prints three sections:
+
+- **Spec slacks** (`spec_slack_index`): max value across all time indices for each product-purity slack. Flags any > `eps_tol` as `** VIOLATED **`.
+- **Physical slacks** (`slack_index`): same reporting for softened physical-bound slacks.
+- **Terminal constraint**: if `'soft'`, reads the terminal soft-penalty Expression from the block and flags if > `eps_tol`. If `'hard'`, notes it is enforced. If `'none'`, notes it is inactive.
+- **Lyapunov constraint**: if `lyap_flag=True` and `lyap_constraint_type='soft'`, reads `m.lyap_slack` and flags violations. Reports constraint type for `'hard'` and `'none'`.
+
 ---
 
 ## Data Flow: Controller ↔ Plant
@@ -501,10 +527,10 @@ where `phi_track` is a scalar `pyo.Expression` = Riemann sum of quadratic tracki
 **Infinite-horizon** (`infinite_horizon=True`): `V_prev`, `first_stage_cost_prev`, and `lyap_stability_constraint` live on the top-level `ConcreteModel` (= `controller._model`):
 ```python
 m.lyap_stability_constraint:
-    finite_block.phi_track + infinite_block.phi_track[τ=1] - V_prev
+    finite_block.phi_track + lyap_beta * infinite_block.phi_track[τ=1] - V_prev
     <= -lyap_delta * first_stage_cost_prev
 ```
-The total Lyapunov measure combines the Riemann sum over the finite block and the ODE integral over the infinite block.
+The total Lyapunov measure combines the Riemann sum over the finite block and the ODE integral over the infinite block, with `lyap_beta` (default `1.2`) scaling the infinite component.
 
 `phi_track` (the quadratic tracking measure) always uses `Σ c[i] * (var[i] - setpoint[i])²` with `stage_cost_weights` — independent of `custom_objective`.
 
@@ -513,7 +539,7 @@ At each MPC iteration (in `run_MPC.py`):
 # lyap_block = controller (proxies to controller._model) in both cases
 if infinite_horizon:
     V_current = pyo.value(controller.finite_block.phi_track) \
-              + pyo.value(controller.infinite_block.phi_track[tau_last])
+              + lyap_beta * pyo.value(controller.infinite_block.phi_track[tau_last])
 else:
     V_current = pyo.value(controller.phi_track)
 first_stage_cost = Σ c[j] * (var[j][t_first_fe] - setpoint[j])²  # at first FE endpoint
@@ -589,13 +615,41 @@ Progressive warm-start: solve sequence of controllers starting at `initializatio
 
 ## IPOPT Configuration
 
-All solvers are configured identically via `_ipopt_solver()`:
+Three solver instances live in `make_model.py`:
+
+**Cold solver** (`_ipopt_solver`) — used for the initial controller solve and plant:
 ```python
 solver.options['linear_solver'] = 'ma57'
 solver.options['OF_ma57_automatic_scaling'] = 'yes'
-solver.options['max_iter'] = 500
+solver.options['max_iter'] = 6000
 solver.options['halt_on_ampl_error'] = 'yes'
 solver.options['bound_relax_factor'] = 0
+```
+
+**Warm solver** (`_ipopt_warm_solver`) — all MPC iterations after the first:
+```python
+# same base settings, plus:
+solver.options['bound_push'] = 1e-8
+solver.options['bound_frac'] = 1e-8
+solver.options['bound_relax_factor'] = 1e-8   # tiny numerical margin at bounds
+solver.options['acceptable_tol'] = 1e-5        # acceptable-solution safety net
+solver.options['acceptable_constr_viol_tol'] = 1e-4
+solver.options['acceptable_obj_change_tol'] = 1e20
+solver.options['acceptable_iter'] = 3
+```
+`bound_relax_factor = 1e-8` prevents the "restoration phase converged to small primal
+infeasibility" failure pattern caused by shift+load introducing a floating-point residual
+at a bound. Post-solve, `_clip_to_bounds()` in `run_MPC.py` projects any out-of-bound
+values back to `[lb, ub]` to prevent downstream `set_value()` failures on slacks.
+
+**Revive solver** (`_ipopt_revive_solver`) — used by `Controller.revive_solve()` when
+the warm solve fails with a retryable termination condition:
+```python
+# same as warm solver but tol=1e-6 (no acceptable_* settings needed)
+solver.options['bound_relax_factor'] = 1e-8
+solver.options['bound_push'] = 1e-8
+solver.options['bound_frac'] = 1e-8
+solver.options['tol'] = 1e-6
 ```
 
 ---
@@ -633,7 +687,7 @@ run.py:
     nfe_finite=2, ncp_finite=1,
     nfe_infinite=5, ncp_infinite=1,
     infinite_horizon=True, terminal_constraint_type='none',
-    custom_objective=True,
+    objective='economic',
     stage_cost_weights=[1, 1, 1/600], beta=1,
     lyap_flag=True, lyap_delta=0.01,
     save_data=True, save_figure=True,
@@ -659,38 +713,48 @@ ternary_distillation_model.py:
   246 state variables: x1[tray,comp], M1[tray] (Col 1); x2[tray,comp], M2[tray] (Col 2)
   Francis Weir formula liquid dynamics
   custom_objective: minimize feed + energy cost minus product revenue
-  slack_index: ["xD1A_eps", "xD2B_eps", "xC_eps", "M1_eps", "M2_eps"]
+  slack_index:      ["xD1A_eps", "xD2B_eps", "xC_eps", "M1_eps", "M2_eps"]  (physical relaxations)
+  spec_slack_index: ["xD1A_eps", "xD2B_eps", "xC_eps"]                       (purity-spec slacks)
 
-run.py (lyap_flag_examples version, confirmed working as of 2026-04-15):
+run.py (lyap_flag_examples version, as of 2026-04-28):
   options = Options.for_model_module(ternary_distillation_model,
-    num_horizons=5,         # set to 5 for testing; restore to 10+ for production
+    num_horizons=200,
     sampling_time=1,
-    nfe_finite=1, ncp_finite=3,
-    infinite_horizon=False,
-    custom_objective=True,
-    lyap_flag=True, lyap_delta=0.01,
-    lyap_constraint_type='soft', lyap_soft_weight=1.0,
+    nfe_finite=2, ncp_finite=3,
+    infinite_horizon=True,
+    nfe_infinite=3, ncp_infinite=3,
     terminal_constraint_type='soft',
-    debug_flag=True, safe_run=True, tee_flag=True,
+    terminal_soft_weight=1e4,
+    objective='economic',
+    stage_cost_weights=[10, 10, 10, 1, 1, 1, 1, 1, 1, 1, 1],
+    slack_penalty_weight=1e4,
+    beta=1.0,
+    lyap_flag=True,
+    lyap_delta=0.5,
+    lyap_constraint_type='soft',
+    lyap_soft_weight=1e4,
+    debug_flag=True,
   )
 ```
 
-This model uses **algebraic CVs** (`xD1A`, `xD2B`, `xC` are computed from tray compositions via equality constraints). They are NOT fixed at t=0 by `_fix_initial_conditions_at_t0` — only differential state vars are fixed. The t=0 constraint deletion in `_finite_block_gen` removes the `xD1A_def[0]`, `xD2B_def[0]`, `xC_def[0]` entries that would otherwise couple algebraic CVs to state vars at t=0. It also demonstrates `m.slack_index` — an optional set for slack variables used for constraint softening.
+This model uses **algebraic CVs** (`xD1A`, `xD2B`, `xC` are computed from tray compositions via equality constraints). They are NOT fixed at t=0 by `_fix_initial_conditions_at_t0` — only differential state vars are fixed. The t=0 constraint deletion in `_finite_block_gen` removes the `xD1A_def[0]`, `xD2B_def[0]`, `xC_def[0]` entries that would otherwise couple algebraic CVs to state vars at t=0. It also demonstrates `m.slack_index` and `m.spec_slack_index` — two optional slack sets for constraint softening (see **Two Slack Index Sets** above).
 
 **Plant options override**: `plant_options` in `Plant.__init__` sets `lyap_flag=False` to eliminate the `lyap_slack` DOF from the plant model (plant only needs to integrate the ODE; Lyapunov slack is a controller artifact).
 
 ---
 
-## Known Issues / State at Last Review (2026-04-15)
+## Known Issues / State at Last Review (2026-04-29)
 
-- Branch: `shifting-behavior`
+- Branch: `binary-distillation`
 - Most examples are not confirmed working; the CSTR lyap_flag example is the primary test case
 - **Ternary distillation lyap example confirmed working** (5 iterations, all IPOPT-optimal, constraint violations at 1e-12 to 1e-15 numerical precision). See LLMJOURNAL.md "Plant Squareness & Warm-Start" entry for full history.
 - `model_output.txt` is written to the working directory at controller construction time (`controllers.py`). This is debug behavior.
 - `gamma` in the results folder path reflects `options.gamma` (which stays `None` until the block stores it on `infinite_block.gamma` — the folder path may show `gamma_None` even after auto-computation)
-- **Pending cleanup items** (not yet addressed):
-  - `plant.py`: unconditional `pprint` to `plant_model.txt` in `Plant.__init__` should be gated by `options.debug_flag` or removed
+- **Pending cleanup items**:
   - `run_MPC.py`: pprint dumps for iterations 0 and 1 (controller post-solve and plant pre-solve) gated by `debug_flag and i <= 1` — acceptable for debugging, but can be removed for production
-  - `examples/lyap_flag_examples/enmpc_ternary_distillation/run.py`: `num_horizons=5` was set for testing; should be restored to 10+ for production runs
-  - **Infinite block (`_infinite_block_gen`)**: Uses LAGRANGE-LEGENDRE where both `t=0` AND `t=t_last` are non-collocation points. The same `equations_write` spurious-constraint issue almost certainly exists there. Not yet investigated.
+- **Resolved items** (fixed on `binary-distillation` branch):
+  - **"Restoration phase converged to small primal infeasibility" random failures**: `bound_relax_factor = 1e-8` added to warm solver; `acceptable_*` secondary safety net added; `_clip_to_bounds()` added in `run_MPC.py` after every solve to project out-of-bound values back to `[lb, ub]`; new `revive_run: int` option for automatic retry. See LLMJOURNAL.md for full history.
+  - `plant.py:85-86`: unconditional `pprint` to `plant_model.txt` — now gated by `options.debug_flag`
+  - **Infinite block (`_infinite_block_gen`)**: LAGRANGE-LEGENDRE t=0 and t=1 spurious constraint issue — **fixed** in `_infinite_block_gen` (mirrors the RADAU fix in `_finite_block_gen`; deletes entries at both endpoints after `equations_write`)
+  - **IC shortcut** (`_make_finite_horizon_model`, `_make_infinite_horizon_model`): the `if all(var in CV_index...)` skip-the-solve branch has been removed; both functions now always call `_build_ic_data(options)` which routes to `_solve_steady_state_model`
 - **IC framework added (2026-04-09):** `_make_steady_state_model` has `fix_slacks=True` param; `_check_ic_consistency`, `_build_ic_data_steady_state`, `_build_ic_data_dynamic`, `_build_ic_data` added to `tools/initialization_tools.py`; `dynamic_initial_conditions` option added. See LLMJOURNAL.md for full details.

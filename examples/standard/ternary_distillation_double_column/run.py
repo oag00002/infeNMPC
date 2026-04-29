@@ -38,7 +38,7 @@ options = Options.for_model_module(
     ncp_infinite=3,
     # ---- Controller settings ----
     terminal_constraint_type='none',
-    custom_objective=True,
+    objective='economic',
     terminal_cost_riemann=False,
     initialize_with_initial_data=False,
     initialization_assist=False,

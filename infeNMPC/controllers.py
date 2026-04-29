@@ -3,9 +3,10 @@ Controller classes for finite- and infinite-horizon NMPC.
 """
 import resource
 import pyomo.environ as pyo
-from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver, _ipopt_warm_solver, _check_optimal
+from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver, _ipopt_warm_solver, _ipopt_revive_solver, _check_optimal
 from .model_equations import _get_model
 from .tools.indexing_tools import _add_time_indexed_expression
+from .tools.debug_tools import _report_constraint_violations
 from .infNMPC_options import Options
 
 
@@ -28,6 +29,7 @@ class Controller:
         self._model = None
         self._solver = _ipopt_solver()
         self._warm_solver = _ipopt_warm_solver()
+        self._revive_solver = _ipopt_revive_solver()
         self._initialized = False  # False until the first (cold) solve completes
 
     def solve(self):
@@ -41,10 +43,40 @@ class Controller:
         solver = self._warm_solver if self._initialized else self._solver
         before = resource.getrusage(resource.RUSAGE_CHILDREN)
         results = solver.solve(self._model, tee=self.options.tee_flag)
-        _check_optimal(results)
+        try:
+            _check_optimal(results)
+        except RuntimeError:
+            self.last_tc = results.solver.termination_condition
+            if self.options.debug_flag:
+                label = "controller initial solve failure" if not self._initialized else "controller solve failure"
+                _report_constraint_violations(self._model, label=label)
+            raise
         after = resource.getrusage(resource.RUSAGE_CHILDREN)
         self.last_solve_time = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+        if self.options.debug_flag:
+            label = "controller initial solve" if not self._initialized else "controller solve"
+            _report_constraint_violations(self._model, label=label)
         self._initialized = True
+
+    def revive_solve(self):
+        """Retry a failed solve with the revive solver from the current model state.
+
+        Uses ``_ipopt_revive_solver`` (``bound_relax_factor=1e-8``, ``tol=1e-6``),
+        starting from whatever state the model is in after the failed warm solve
+        (typically the restoration point, which already has tiny ``inf_pr``).
+        Does not change ``_initialized`` — the warm solver remains active on the
+        next MPC iteration.  ``last_solve_time`` is set to the revive solve time
+        only; the failed initial solve is not counted.
+        """
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        results = self._revive_solver.solve(self._model, tee=self.options.tee_flag)
+        try:
+            _check_optimal(results)
+        except RuntimeError:
+            self.last_tc = results.solver.termination_condition
+            raise
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        self.last_solve_time = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
 
     def __getattr__(self, name: str):
         return getattr(self._model, name)
@@ -86,7 +118,7 @@ class InfiniteHorizonController(Controller):
         _use_soft_lyap = (options.lyap_flag
                           and getattr(options, 'lyap_constraint_type', 'hard') == 'soft')
 
-        if options.custom_objective:
+        if options.objective == 'economic':
             custom_objective = _get_model(options).custom_objective
             cost_fn = custom_objective(m.finite_block, options)
 
@@ -153,6 +185,18 @@ class InfiniteHorizonController(Controller):
                                  * options.terminal_soft_weight)
                 if _use_soft_lyap:
                     obj = obj + m.lyap_slack * options.lyap_soft_weight
+                if hasattr(m.finite_block, 'slack_index') and options.slack_penalty_weight > 0:
+                    obj += options.slack_penalty_weight * sum(
+                        getattr(m.finite_block, sv_name)[idx]
+                        for sv_name in m.finite_block.slack_index
+                        for idx in getattr(m.finite_block, sv_name).index_set()
+                    )
+                if hasattr(m.infinite_block, 'slack_index') and options.slack_penalty_weight > 0:
+                    obj += options.slack_penalty_weight * sum(
+                        getattr(m.infinite_block, sv_name)[idx]
+                        for sv_name in m.infinite_block.slack_index
+                        for idx in getattr(m.infinite_block, sv_name).index_set()
+                    )
                 return obj
 
         else:
@@ -202,6 +246,18 @@ class InfiniteHorizonController(Controller):
                                  * options.terminal_soft_weight)
                 if _use_soft_lyap:
                     obj = obj + m.lyap_slack * options.lyap_soft_weight
+                if hasattr(m.finite_block, 'slack_index') and options.slack_penalty_weight > 0:
+                    obj += options.slack_penalty_weight * sum(
+                        getattr(m.finite_block, sv_name)[idx]
+                        for sv_name in m.finite_block.slack_index
+                        for idx in getattr(m.finite_block, sv_name).index_set()
+                    )
+                if hasattr(m.infinite_block, 'slack_index') and options.slack_penalty_weight > 0:
+                    obj += options.slack_penalty_weight * sum(
+                        getattr(m.infinite_block, sv_name)[idx]
+                        for sv_name in m.infinite_block.slack_index
+                        for idx in getattr(m.infinite_block, sv_name).index_set()
+                    )
                 return obj
 
             m.lyapunov = pyo.Expression(
@@ -264,7 +320,7 @@ class FiniteHorizonController(Controller):
         _use_soft_lyap = (options.lyap_flag
                           and getattr(options, 'lyap_constraint_type', 'hard') == 'soft')
 
-        if options.custom_objective:
+        if options.objective == 'economic':
             custom_objective = _get_model(options).custom_objective
             cost_fn = custom_objective(m, options)
 
@@ -316,6 +372,12 @@ class FiniteHorizonController(Controller):
                                   * options.terminal_soft_weight)
                 if _use_soft_lyap:
                     stage_cost = stage_cost + m.lyap_slack * options.lyap_soft_weight
+                if hasattr(m, 'slack_index') and options.slack_penalty_weight > 0:
+                    stage_cost += options.slack_penalty_weight * sum(
+                        getattr(m, sv_name)[idx]
+                        for sv_name in m.slack_index
+                        for idx in getattr(m, sv_name).index_set()
+                    )
                 return stage_cost
 
         m.objective = pyo.Objective(rule=objective_rule, sense=pyo.minimize)

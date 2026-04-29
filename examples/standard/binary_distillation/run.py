@@ -36,7 +36,7 @@ options = Options.for_model_module(
     # ---- Controller settings ----
     infinite_horizon=False,
     terminal_constraint_type='hard',
-    custom_objective=False,
+    objective='tracking',
     # ---- Cost function ----
     stage_cost_weights=[1e5, 1e3, 0, 0],
     gamma=0.05,

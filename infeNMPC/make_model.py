@@ -32,6 +32,7 @@ from .tools.collocation_tools import (
     _lagrange_coeffs_at_endpoint,
 )
 from .tools.initialization_tools import _check_ic_consistency, _build_ic_data
+from .tools.debug_tools import _report_constraint_violations
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,6 @@ def _ipopt_warm_solver():
     solver.options['OF_ma57_automatic_scaling'] = 'yes'
     solver.options['max_iter'] = 6000
     solver.options['halt_on_ampl_error'] = 'yes'
-    solver.options['bound_relax_factor'] = 0
     # warm_start_init_point is intentionally omitted: Pyomo's ipopt_v2 interface
     # does not pass dual variable (multiplier) values to IPOPT without an explicit
     # Suffix setup.  Enabling it with zero duals gives IPOPT a badly-conditioned
@@ -174,6 +174,34 @@ def _ipopt_warm_solver():
     # than being projected further into the interior at the start of each solve.
     solver.options['bound_push'] = 1e-8
     solver.options['bound_frac'] = 1e-8
+    # bound_relax_factor = 0 (IPOPT default): enforce bounds exactly.  Relaxing
+    # this to 1e-8 changes the barrier NLP enough that IPOPT exits via the
+    # default acceptable_iter=15 criterion with inf_pr~4.8e-7 (equality residual),
+    # which then propagates to the plant as an infeasible warm start.  The
+    # restoration-failure case (inf_pr~2.4e-7 at ~92% of the run) is handled
+    # by the revive solver (_ipopt_revive_solver, bound_relax_factor=1e-8) via
+    # the revive_run mechanism — not by relaxing the warm solver itself.
+    return solver
+
+
+def _ipopt_revive_solver():
+    """Return an IPOPT solver for revival after a warm-solve restoration failure.
+
+    Identical to the warm solver but with ``bound_relax_factor=1e-8`` and
+    ``tol=1e-6``.  Used by ``Controller.revive_solve()`` when the main warm
+    solve fails with a retryable termination condition.  Starting from the
+    restoration point (inf_pr already small) the relaxed tolerance usually
+    lets IPOPT converge in a handful of iterations.
+    """
+    solver = pyo.SolverFactory('ipopt_v2')
+    solver.options['linear_solver'] = 'ma57'
+    solver.options['OF_ma57_automatic_scaling'] = 'yes'
+    solver.options['max_iter'] = 6000
+    solver.options['halt_on_ampl_error'] = 'yes'
+    solver.options['bound_relax_factor'] = 1e-8
+    solver.options['bound_push'] = 1e-8
+    solver.options['bound_frac'] = 1e-8
+    solver.options['tol'] = 1e-6
     return solver
 
 
@@ -210,6 +238,13 @@ def _make_steady_state_model(m, options, fix_slacks=True):
                 for idx in sv_var.index_set():
                     sv_var[idx].fix(0)
 
+    if fix_slacks and hasattr(m, 'spec_slack_index'):
+        for sv_name in m.spec_slack_index:
+            sv_var = getattr(m, sv_name, None)
+            if sv_var is not None and isinstance(sv_var, pyo.Var):
+                for idx in sv_var.index_set():
+                    sv_var[idx].fix(0)
+
     deriv_vars, state_vars = _get_derivative_and_state_vars(m)
 
     discretizer = pyo.TransformationFactory('dae.collocation')
@@ -233,9 +268,9 @@ def _solve_steady_state_model(m, target, options, label="ss"):
     """
     Solve the steady-state model and return data at the initial time point.
 
-    When ``options.custom_objective`` is True and no target is supplied, the
-    objective is the average of the user-supplied stage cost at ``t=0`` and
-    ``t=1``.  Otherwise a standard penalty-from-target objective is used.
+    When *target* is ``None``, the objective is the average of the model's
+    ``custom_objective`` stage cost at ``t=0`` and ``t=1`` (economic SS solve).
+    Otherwise a standard penalty-from-target objective is used.
 
     Parameters
     ----------
@@ -254,7 +289,7 @@ def _solve_steady_state_model(m, target, options, label="ss"):
     """
     ss_interface = DynamicModelInterface(m, m.time)
 
-    if options.custom_objective and target is None:
+    if target is None:
         custom_objective = _get_model(options).custom_objective
         cost_fn = custom_objective(m, options)
 
@@ -277,7 +312,14 @@ def _solve_steady_state_model(m, target, options, label="ss"):
 
     solver = _ipopt_solver()
     results = solver.solve(m, tee=options.tee_flag)
-    _check_optimal(results, "steady-state")
+    try:
+        _check_optimal(results, "steady-state")
+    except RuntimeError:
+        if options.debug_flag:
+            _report_constraint_violations(m, label=f"{label} steady-state failure")
+        raise
+    if options.debug_flag:
+        _report_constraint_violations(m, label=f"{label} steady-state")
 
     m.ss_obj_value = pyo.value(m.objective)
 
@@ -308,10 +350,13 @@ def _make_infinite_horizon_model(m, options):
     m_ss = pyo.ConcreteModel()
     m_ss = _make_steady_state_model(m_ss, options)
 
-    m_ss_target = None if options.custom_objective else ScalarData({
-        _get_variable_key_for_data(m_ss, var): pyo.value(m_ss.setpoints[var])
-        for var in m_ss.setpoints.index_set()
-    })
+    if options.objective == 'economic' or options.tracking_setpoint == 'economic':
+        m_ss_target = None
+    else:
+        m_ss_target = ScalarData({
+            _get_variable_key_for_data(m_ss, var): pyo.value(m_ss.setpoints[var])
+            for var in m_ss.setpoints.index_set()
+        })
 
     print('Solving Steady State Model')
     steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options, label="ss")
@@ -332,8 +377,10 @@ def _make_infinite_horizon_model(m, options):
     m.infinite_block = pyo.Block()
     m.finite_block.steady_state_values = steady_state_values
     m.infinite_block.steady_state_values = steady_state_values
+    m.finite_block.steady_state_data = steady_state_data
+    m.infinite_block.steady_state_data = steady_state_data
 
-    if options.custom_objective:
+    if options.objective == 'economic':
         m.finite_block.ss_obj_value = m_ss.ss_obj_value
         m.infinite_block.ss_obj_value = m_ss.ss_obj_value
 
@@ -350,10 +397,11 @@ def _make_infinite_horizon_model(m, options):
         m.first_stage_cost_prev = pyo.Param(mutable=True, initialize=0.0)
         tau_last = m.infinite_block.time.last()
         lct = getattr(options, 'lyap_constraint_type', 'hard')
+        lyap_beta = getattr(options, 'lyap_beta', 1.2)
         if lct == 'hard':
             m.lyap_stability_constraint = pyo.Constraint(
                 expr=(
-                    m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
+                    m.finite_block.phi_track + lyap_beta * m.infinite_block.phi_track[tau_last] - m.V_prev
                     <= -options.lyap_delta * m.first_stage_cost_prev
                 )
             )
@@ -361,7 +409,7 @@ def _make_infinite_horizon_model(m, options):
             m.lyap_slack = pyo.Var(initialize=0.0, domain=pyo.NonNegativeReals)
             m.lyap_stability_constraint = pyo.Constraint(
                 expr=(
-                    m.finite_block.phi_track + m.infinite_block.phi_track[tau_last] - m.V_prev
+                    m.finite_block.phi_track + lyap_beta * m.infinite_block.phi_track[tau_last] - m.V_prev
                     <= -options.lyap_delta * m.first_stage_cost_prev + m.lyap_slack
                 )
             )
@@ -399,10 +447,13 @@ def _make_finite_horizon_model(m, options):
     m_ss = pyo.ConcreteModel()
     m_ss = _make_steady_state_model(m_ss, options)
 
-    m_ss_target = None if options.custom_objective else ScalarData({
-        _get_variable_key_for_data(m_ss, var): pyo.value(m_ss.setpoints[var])
-        for var in m_ss.setpoints.index_set()
-    })
+    if options.objective == 'economic' or options.tracking_setpoint == 'economic':
+        m_ss_target = None
+    else:
+        m_ss_target = ScalarData({
+            _get_variable_key_for_data(m_ss, var): pyo.value(m_ss.setpoints[var])
+            for var in m_ss.setpoints.index_set()
+        })
 
     steady_state_data = _solve_steady_state_model(m_ss, m_ss_target, options, label="ss")
 
@@ -417,8 +468,10 @@ def _make_finite_horizon_model(m, options):
 
     print('Writing Finite Horizon Model')
 
-    m.ss_obj_value = m_ss.ss_obj_value
+    if options.objective == 'economic':
+        m.ss_obj_value = m_ss.ss_obj_value
     m.steady_state_values = steady_state_values
+    m.steady_state_data = steady_state_data
     m = _finite_block_gen(m, options)
 
     m.interface = DynamicModelInterface(m, m.time, clean_model=True)
@@ -444,6 +497,65 @@ def _make_finite_horizon_model(m, options):
     _check_ic_consistency(m)
 
     return m
+
+
+def _build_phi_terms(m, state_vars, options):
+    """
+    Build a list of (key_str, ss_val, weight) tuples for Lyapunov phi_track.
+
+    Covers all differential state variables (uniform weight 1.0) and all MVs
+    (weight from stage_cost_weights at position len(CV_index)+i).  CVs are
+    intentionally omitted — they are algebraic aliases of state variables and
+    are already captured via those entries.
+
+    Parameters
+    ----------
+    m : pyo.Block or pyo.ConcreteModel
+        Must have ``steady_state_data``, ``steady_state_values``, ``CV_index``,
+        and ``MV_index`` attributes.
+    state_vars : set
+        Set of Pyomo Var objects that have a DerivativeVar (differential states).
+    options : Options
+
+    Returns
+    -------
+    list of (key_str, ss_val, weight) tuples
+    """
+    terms = []
+    t_sample = m.time.first()
+
+    for var in sorted(state_vars, key=lambda v: v.local_name):
+        var_name = var.local_name
+        for idx in var.keys():
+            if isinstance(idx, tuple):
+                if idx[-1] != t_sample:
+                    continue
+                spatial_idx = idx[:-1]
+            else:
+                if idx != t_sample:
+                    continue
+                spatial_idx = ()
+
+            if spatial_idx:
+                key_str = f"{var_name}[{','.join(str(i) for i in spatial_idx)}]"
+                ss_key = f"{var_name}[{','.join(str(i) for i in spatial_idx)},*]"
+            else:
+                key_str = var_name
+                ss_key = f"{var_name}[*]"
+
+            ss_val = m.steady_state_data.get_data_from_key(ss_key)
+            terms.append((key_str, ss_val, 1.0))
+
+    mv_list = list(m.MV_index)
+    n_cv = len(list(m.CV_index))
+    c_raw = options.stage_cost_weights or []
+    for i, mv in enumerate(mv_list):
+        w_idx = n_cv + i
+        w = c_raw[w_idx] if len(c_raw) > w_idx else 1.0
+        ss_val = m.steady_state_values[mv]
+        terms.append((mv, ss_val, w))
+
+    return terms
 
 
 def _finite_block_gen(m, options):
@@ -487,6 +599,12 @@ def _finite_block_gen(m, options):
                     m = discretizer.reduce_collocation_points(
                         m, var=getattr(m, sv), ncp=1, contset=m.time
                     )
+        if hasattr(m, 'spec_slack_index'):
+            for sv in m.spec_slack_index:
+                if hasattr(m, sv):
+                    m = discretizer.reduce_collocation_points(
+                        m, var=getattr(m, sv), ncp=1, contset=m.time
+                    )
 
     _model.equations_write(m)
 
@@ -507,25 +625,16 @@ def _finite_block_gen(m, options):
             del _con[_idx]
 
     if options.lyap_flag:
-        track_list_ft = list(m.CV_index) + list(m.MV_index)
-        c_raw_ft = options.stage_cost_weights or []
-        c_track_ft = (
-            c_raw_ft[:len(track_list_ft)]
-            if len(c_raw_ft) >= len(track_list_ft)
-            else [1.0] * len(track_list_ft)
-        )
         # Sum tracking cost at each FE right-endpoint (Radau points), skipping t=0.
         # With LAGRANGE-RADAU, FE endpoints are collocation points, so MVs exist there.
         fe_pts_ft = [t for t in m.time.get_finite_elements() if t != m.time.first()]
+        phi_terms_ft = _build_phi_terms(m, m.state_vars, options)
 
         def _phi_track_expr(m):
             return sum(
-                c_track_ft[i] * (
-                    _add_time_indexed_expression(m, var, t)
-                    - m.steady_state_values[var]
-                )**2
+                w * (_add_time_indexed_expression(m, key, t) - ss_val)**2
+                for key, ss_val, w in phi_terms_ft
                 for t in fe_pts_ft
-                for i, var in enumerate(track_list_ft)
             )
 
         m.phi_track = pyo.Expression(rule=_phi_track_expr)
@@ -678,6 +787,13 @@ def _infinite_block_gen(m, options):
     else:
         gamma = options.gamma
 
+    # Compute pre-phi state vars so _add_dphidt (and later the terminal
+    # constraint section) can build full-state expressions without accidentally
+    # including phi/phi_track integral vars.
+    pre_phi_deriv_vars, pre_phi_state_vars = _get_derivative_and_state_vars(m)
+    # Alias so the closure in _add_dphidt sees 'state_vars' = pre-phi set.
+    state_vars = pre_phi_state_vars
+
     def _add_dphidt(m):
         # --- phi: primary terminal cost integral ---
         m.phi = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
@@ -689,7 +805,7 @@ def _infinite_block_gen(m, options):
         )
         c = options.stage_cost_weights
 
-        if options.custom_objective:
+        if options.objective == 'economic':
             custom_objective = _model.custom_objective
             cost_fn = custom_objective(m, options)
 
@@ -721,10 +837,10 @@ def _infinite_block_gen(m, options):
 
             m.terminal_cost = pyo.Constraint(m.time, rule=_terminal_cost_rule)
 
-        # --- phi_track: quadratic tracking Lyapunov integral over CVs and MVs ---
-        track_list = list(m.CV_index) + list(m.MV_index)
-        c_raw = options.stage_cost_weights or []
-        c_track = c_raw[:len(track_list)] if len(c_raw) >= len(track_list) else [1.0] * len(track_list)
+        # --- phi_track: Lyapunov integral over all state vars + MVs ---
+        # Pre-build terms using state_vars computed before _add_dphidt was called,
+        # so phi/phi_track themselves are not accidentally included.
+        phi_terms_inf = _build_phi_terms(m, state_vars, options)
 
         m.phi_track = pyo.Var(m.time, initialize=0, domain=pyo.NonNegativeReals)
         m.phi_track[0].fix(0)
@@ -734,11 +850,8 @@ def _infinite_block_gen(m, options):
             if t == 0 or t == 1:
                 return pyo.Constraint.Skip
             tracking_cost = sum(
-                c_track[i] * (
-                    _add_time_indexed_expression(m, var, t)
-                    - m.steady_state_values[var]
-                )**2
-                for i, var in enumerate(track_list)
+                w * (_add_time_indexed_expression(m, key, t) - ss_val)**2
+                for key, ss_val, w in phi_terms_inf
             )
             return (
                 (gamma / options.sampling_time * (1 - t**2))
@@ -749,7 +862,6 @@ def _infinite_block_gen(m, options):
 
         return m
 
-    deriv_vars, state_vars = _get_derivative_and_state_vars(m)
     m = _add_dphidt(m)
 
     m.gamma = gamma
@@ -767,6 +879,23 @@ def _infinite_block_gen(m, options):
 
     _model.equations_write(m)
 
+    # LEGENDRE: delete all constraint entries at t=0 and t=1 written by
+    # equations_write.  Neither endpoint is a collocation point.  Pyomo's
+    # continuity equations already pin the differential state variables there;
+    # the user's constraint entries at these endpoints are spurious and cause
+    # IPOPT to see more equality constraints than free variables (TOO_FEW_DOF).
+    # terminal_cost and phi_track_ode are unaffected — they already return
+    # Constraint.Skip at t=0 and t=1, so no entries exist there to delete.
+    _t0_del = m.time.first()
+    _t1_del = m.time.last()
+    for _con in m.component_objects(pyo.Constraint):
+        _keys_to_del = [
+            _idx for _idx in list(_con.keys())
+            if (_idx[-1] if isinstance(_idx, tuple) else _idx) in (_t0_del, _t1_del)
+        ]
+        for _idx in _keys_to_del:
+            del _con[_idx]
+
     # --- Terminal constraints for the infinite-horizon block ---
     #
     # LEGENDRE collocation places quadrature points strictly inside each
@@ -779,74 +908,81 @@ def _infinite_block_gen(m, options):
     #
     # Strategy
     # --------
-    # • Differential CVs  → direct access at τ=1 (already determined).
-    # • Algebraic CVs/MVs → Lagrange extrapolation from the last FE's
-    #                        collocation points.
+    # • All state vars (differential) → direct access at τ=1 (pinned by Pyomo continuity).
+    # • MVs (algebraic)               → Lagrange extrapolation from the last FE's
+    #                                   collocation points.
+    # • CVs (algebraic aliases)       → skipped; captured implicitly via state vars.
     if options.terminal_constraint_type in ('hard', 'soft'):
-        stage_cost_index = list(m.CV_index) + list(m.MV_index)
-        vars_tc = _terminal_vars(m, options)
-        weights = _terminal_weights(options, vars_tc, stage_cost_index)
+        # Terminal constraint over ALL state variables (direct τ=1 access, pinned
+        # by Pyomo continuity equations) + MVs (Lagrange extrapolation to τ=1).
+        # CVs are algebraic aliases of state vars and are not separately constrained.
+        # Use pre_phi_state_vars to exclude phi/phi_track integral variables.
+        last_fe_pts = _get_last_fe_pts(m)
+        lag_coeffs  = _lagrange_coeffs_at_endpoint(last_fe_pts, 1.0)
 
-        # Re-detect state_vars after equations_write (user may add DerivativeVar
-        # inside equations_write; in practice they never do, but be safe).
-        _, state_vars_tc = _get_derivative_and_state_vars(m)
+        def _mv_extrap(var_name):
+            return sum(
+                c * _add_time_indexed_expression(m, var_name, t)
+                for c, t in zip(lag_coeffs, last_fe_pts)
+            )
 
-        def _is_differential(var_name):
-            base = var_name.split('[')[0]
-            return getattr(m, base) in state_vars_tc
+        t_s = m.time.first()
+        state_tc_items = []  # (key_str, ss_val, weight)
+        for var in sorted(pre_phi_state_vars, key=lambda v: v.local_name):
+            var_name = var.local_name
+            for idx in var.keys():
+                if isinstance(idx, tuple):
+                    if idx[-1] != t_s:
+                        continue
+                    spatial_idx = idx[:-1]
+                else:
+                    if idx != t_s:
+                        continue
+                    spatial_idx = ()
+                if spatial_idx:
+                    key_str = f"{var_name}[{','.join(str(i) for i in spatial_idx)}]"
+                    ss_key = f"{var_name}[{','.join(str(i) for i in spatial_idx)},*]"
+                else:
+                    key_str = var_name
+                    ss_key = f"{var_name}[*]"
+                ss_val = m.steady_state_data.get_data_from_key(ss_key)
+                state_tc_items.append((key_str, ss_val, 1.0))
 
-        diff_vars = [v for v in vars_tc if _is_differential(v)]
-        alg_vars  = [v for v in vars_tc if not _is_differential(v)]
-
-        # Lagrange coefficients: computed once, reused for all alg. vars.
-        if alg_vars:
-            last_fe_pts = _get_last_fe_pts(m)
-            lag_coeffs  = _lagrange_coeffs_at_endpoint(last_fe_pts, 1.0)
-
-            def _alg_extrap(var_name):
-                """Pyomo expression for the extrapolated terminal value."""
-                return sum(
-                    c * _add_time_indexed_expression(m, var_name, t)
-                    for c, t in zip(lag_coeffs, last_fe_pts)
-                )
+        n_cv = len(list(m.CV_index))
+        c_raw_tc = options.stage_cost_weights or []
+        mv_tc_items = []  # (mv_name, ss_val, weight)
+        for i, mv in enumerate(list(m.MV_index)):
+            w_idx = n_cv + i
+            w = c_raw_tc[w_idx] if len(c_raw_tc) > w_idx else 1.0
+            mv_tc_items.append((mv, m.steady_state_values[mv], w))
 
         if options.terminal_constraint_type == 'hard':
-            # Differential CVs: τ=1 exists and is pinned by Pyomo continuity.
-            if diff_vars:
-                diff_weights = _terminal_weights(options, diff_vars, stage_cost_index)
+            if state_tc_items:
+                ss_dict_state = {key: ss for key, ss, _ in state_tc_items}
 
-                def _diff_tc_rule(m, v):
-                    return (
-                        _add_time_indexed_expression(m, v, 1)
-                        == m.steady_state_values[v]
-                    )
+                def _state_tc_rule(m, v):
+                    return _add_time_indexed_expression(m, v, 1) == ss_dict_state[v]
 
                 m.diff_terminal_constraints = pyo.Constraint(
-                    diff_vars, rule=_diff_tc_rule
+                    [key for key, _, _ in state_tc_items], rule=_state_tc_rule
                 )
+            if mv_tc_items:
+                ss_dict_mv = {mv: ss for mv, ss, _ in mv_tc_items}
 
-            # Algebraic CVs / MVs: polynomial extrapolation to τ=1.
-            if alg_vars:
-                def _alg_tc_rule(m, v):
-                    return _alg_extrap(v) == m.steady_state_values[v]
+                def _mv_tc_rule(m, v):
+                    return _mv_extrap(v) == ss_dict_mv[v]
 
                 m.alg_terminal_constraints = pyo.Constraint(
-                    alg_vars, rule=_alg_tc_rule
+                    [mv for mv, _, _ in mv_tc_items], rule=_mv_tc_rule
                 )
 
         else:  # 'soft' — build penalty Expression on the block
-            diff_weights = _terminal_weights(options, diff_vars, stage_cost_index)
-            alg_weights  = _terminal_weights(options, alg_vars,  stage_cost_index)
-            penalty_terms = []
-            for v, w in zip(diff_vars, diff_weights):
-                penalty_terms.append(
-                    w * (_add_time_indexed_expression(m, v, 1)
-                         - m.steady_state_values[v])**2
-                )
-            for v, w in zip(alg_vars, alg_weights):
-                penalty_terms.append(
-                    w * (_alg_extrap(v) - m.steady_state_values[v])**2
-                )
+            penalty_terms = (
+                [w * (_add_time_indexed_expression(m, key, 1) - ss)**2
+                 for key, ss, w in state_tc_items]
+                + [w * (_mv_extrap(mv) - ss)**2
+                   for mv, ss, w in mv_tc_items]
+            )
             m.infinite_terminal_soft_penalty = pyo.Expression(
                 expr=sum(penalty_terms) if penalty_terms else pyo.Constant(0)
             )
@@ -913,66 +1049,124 @@ if __name__ == '__main__':
 
     from infeNMPC.infNMPC_options import Options  # type: ignore[import]
 
-    # Load the ternary distillation model from the lyap_flag example.
+    # ---- Binary distillation steady-state check ----
     _example_dir = (
         Path(__file__).parent.parent
-        / 'examples' / 'lyap_flag_examples' / 'enmpc_ternary_distillation'
+        / 'examples' / 'lyap_flag_examples' / 'enmpc_binary_distillation'
     )
     sys.path.insert(0, str(_example_dir))
-    import ternary_distillation_model  # type: ignore[import]  # noqa: E402
+    import binary_distillation_model  # type: ignore[import]  # noqa: E402
 
     options = Options.for_model_module(
-        ternary_distillation_model,
-        sampling_time=1,
+        binary_distillation_model,
+        sampling_time=10,
         nfe_finite=3,
         ncp_finite=3,
         infinite_horizon=False,
-        custom_objective=True,
+        objective='economic',
         tee_flag=True,
-        stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     )
 
-    print('\nBuilding steady-state model for ternary distillation...')
+    print('\nBuilding steady-state model for binary distillation...')
     m_ss = pyo.ConcreteModel()
     m_ss = _make_steady_state_model(m_ss, options)
-    # m_ss.xC.fix(0.95)
-    # m_ss.xD1A.fix(0.95)
-    # m_ss.xD2B.fix(0.95)
 
     print('Solving steady-state model...')
     ss_data = _solve_steady_state_model(m_ss, None, options, label="ss")
 
-    # ---- Report objective sign ----
+    # ---- Report objective value ----
     obj_val = m_ss.ss_obj_value
     print(f'\nSteady-state objective value: {obj_val:.6g}')
-    if obj_val < 0:
-        print('  -> NEGATIVE: revenue > cost (system is profitable at SS optimum)')
-    else:
-        print('  -> POSITIVE: cost > revenue (system loses money at SS optimum)')
 
     # ---- Economic breakdown ----
-    # RADAU nfe=1 ncp=1: single collocation point is at t=1.
+    # RADAU nfe=1 ncp=1: single collocation point is at t=sampling_time.
     t_ss = m_ss.time.last()
-    pF, pV, pA, pB, pC = 1.0, 0.008, 1.0, 2.0, 1.0
+    x_1_val  = pyo.value(m_ss.x[1,  t_ss])
+    x_42_val = pyo.value(m_ss.x[42, t_ss])
+    Qr_val   = pyo.value(m_ss.Qr[t_ss])
+    Qc_val   = pyo.value(m_ss.Qc[t_ss])
+    Rec_val  = pyo.value(m_ss.Rec[t_ss])
 
-    F_val   = pyo.value(m_ss.F)
-    VB1_val = pyo.value(m_ss.VB1[t_ss])
-    VB2_val = pyo.value(m_ss.VB2[t_ss])
-    D1_val  = pyo.value(m_ss.D1[t_ss])
-    D2_val  = pyo.value(m_ss.D2[t_ss])
-    B2_val  = pyo.value(m_ss.B2[t_ss])
-    xD1A    = pyo.value(m_ss.xD1A[t_ss])
-    xD2B    = pyo.value(m_ss.xD2B[t_ss])
-    xC      = pyo.value(m_ss.xC[t_ss])
+    # ---- Purity slack check (should both be 0 — fixed during SS solve) ----
+    eps_top = pyo.value(m_ss.x_top_eps[t_ss])
+    eps_bot = pyo.value(m_ss.x_bot_eps[t_ss])
 
-    feed_cost   = pF * F_val
-    energy_cost = pV * (VB1_val + VB2_val)
-    revenue     = pA * D1_val + pB * D2_val + pC * B2_val
+    rho = 1e4
+    stage_cost_val = Qr_val * 1e1 + Qc_val + rho * (eps_top + eps_bot)
 
-    print('\nEconomic breakdown at SS optimum (t = t_last):')
-    print(f'  Feed cost    pF*F             = {feed_cost:.4f}')
-    print(f'  Energy cost  pV*(VB1+VB2)     = {pV}*({VB1_val:.4f} + {VB2_val:.4f}) = {energy_cost:.4f}')
-    print(f'  Revenue      pA*D1+pB*D2+pC*B2 = {pA*D1_val:.4f} + {pB*D2_val:.4f} + {pC*B2_val:.4f} = {revenue:.4f}')
-    print(f'  Net profit rate (revenue - cost) = {revenue - feed_cost - energy_cost:.4f} $/h')
-    print(f'  Objective (cost - revenue)       = {feed_cost + energy_cost - revenue:.4f}')
-    print(f'\nPurity CVs: xD1A={xD1A:.4f}  xD2B={xD2B:.4f}  xC={xC:.4f}')
+    print('\nSteady-state operating point:')
+    print(f'  Qr  = {Qr_val:.6f}  (reboiler duty, MJ/h)')
+    print(f'  Rec = {Rec_val:.6f}  (reflux ratio)')
+    print(f'  Qc  = {Qc_val:.6f}  (condenser duty, MJ/h)')
+    print(f'\nPurity at SS:')
+    print(f'  Distillate methanol   x[42] = {x_42_val:.6f}  (target >= 0.99)')
+    print(f'  Bottoms n-propanol 1-x[ 1] = {1 - x_1_val:.6f}  (target >= 0.99)')
+    print(f'\nPurity slacks (should be 0 — fixed during SS solve):')
+    print(f'  x_top_eps[t_ss] = {eps_top:.2e}')
+    print(f'  x_bot_eps[t_ss] = {eps_bot:.2e}')
+    print(f'\nStage cost at SS = {stage_cost_val:.6f}')
+    print(f'  (= 10*Qr + Qc + rho*(x_top_eps + x_bot_eps))')
+
+    # ---- Ternary distillation steady-state check (commented out) ----
+    # _example_dir = (
+    #     Path(__file__).parent.parent
+    #     / 'examples' / 'lyap_flag_examples' / 'enmpc_ternary_distillation'
+    # )
+    # sys.path.insert(0, str(_example_dir))
+    # import ternary_distillation_model  # type: ignore[import]  # noqa: E402
+    #
+    # options = Options.for_model_module(
+    #     ternary_distillation_model,
+    #     sampling_time=1,
+    #     nfe_finite=3,
+    #     ncp_finite=3,
+    #     infinite_horizon=False,
+    #     objective='economic',
+    #     tee_flag=True,
+    #     stage_cost_weights=[1.0e4, 1.0e4, 1.0e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    # )
+    #
+    # print('\nBuilding steady-state model for ternary distillation...')
+    # m_ss = pyo.ConcreteModel()
+    # m_ss = _make_steady_state_model(m_ss, options)
+    # # m_ss.xC.fix(0.95)
+    # # m_ss.xD1A.fix(0.95)
+    # # m_ss.xD2B.fix(0.95)
+    #
+    # print('Solving steady-state model...')
+    # ss_data = _solve_steady_state_model(m_ss, None, options, label="ss")
+    #
+    # # ---- Report objective sign ----
+    # obj_val = m_ss.ss_obj_value
+    # print(f'\nSteady-state objective value: {obj_val:.6g}')
+    # if obj_val < 0:
+    #     print('  -> NEGATIVE: revenue > cost (system is profitable at SS optimum)')
+    # else:
+    #     print('  -> POSITIVE: cost > revenue (system loses money at SS optimum)')
+    #
+    # # ---- Economic breakdown ----
+    # # RADAU nfe=1 ncp=1: single collocation point is at t=1.
+    # t_ss = m_ss.time.last()
+    # pF, pV, pA, pB, pC = 1.0, 0.008, 1.0, 2.0, 1.0
+    #
+    # F_val   = pyo.value(m_ss.F)
+    # VB1_val = pyo.value(m_ss.VB1[t_ss])
+    # VB2_val = pyo.value(m_ss.VB2[t_ss])
+    # D1_val  = pyo.value(m_ss.D1[t_ss])
+    # D2_val  = pyo.value(m_ss.D2[t_ss])
+    # B2_val  = pyo.value(m_ss.B2[t_ss])
+    # xD1A    = pyo.value(m_ss.xD1A[t_ss])
+    # xD2B    = pyo.value(m_ss.xD2B[t_ss])
+    # xC      = pyo.value(m_ss.xC[t_ss])
+    #
+    # feed_cost   = pF * F_val
+    # energy_cost = pV * (VB1_val + VB2_val)
+    # revenue     = pA * D1_val + pB * D2_val + pC * B2_val
+    #
+    # print('\nEconomic breakdown at SS optimum (t = t_last):')
+    # print(f'  Feed cost    pF*F             = {feed_cost:.4f}')
+    # print(f'  Energy cost  pV*(VB1+VB2)     = {pV}*({VB1_val:.4f} + {VB2_val:.4f}) = {energy_cost:.4f}')
+    # print(f'  Revenue      pA*D1+pB*D2+pC*B2 = {pA*D1_val:.4f} + {pB*D2_val:.4f} + {pC*B2_val:.4f} = {revenue:.4f}')
+    # print(f'  Net profit rate (revenue - cost) = {revenue - feed_cost - energy_cost:.4f} $/h')
+    # print(f'  Objective (cost - revenue)       = {feed_cost + energy_cost - revenue:.4f}')
+    # print(f'\nPurity CVs: xD1A={xD1A:.4f}  xD2B={xD2B:.4f}  xC={xC:.4f}')

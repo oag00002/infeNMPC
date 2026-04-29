@@ -14,7 +14,8 @@ from .data_save_and_plot import (
     _save_io_csv,
 )
 from .tools.indexing_tools import _get_variable_key_for_data, _add_time_indexed_expression
-from .tools.debug_tools import _report_constraint_violations
+from .tools.debug_tools import _report_constraint_violations, _report_solver_diagnostics
+from .tools.solver_tools import _clip_to_bounds, _attempt_revive
 
 
 def mpc_loop(options: Options):
@@ -149,24 +150,19 @@ def mpc_loop(options: Options):
 
         try:
             controller.solve()
-        except RuntimeError:
-            if options.debug_flag:
-                _report_constraint_violations(
-                    controller._model, label=f"controller failure at iteration {i}"
-                )
-            raise
+        except RuntimeError as exc:
+            _attempt_revive(controller, i, options, exc)  # raises if not revived
+        _clip_to_bounds(controller._model)
         cpu_time.append(controller.last_solve_time)
+
+        if options.debug_flag:
+            _report_solver_diagnostics(controller, options, i)
 
         if options.debug_flag and i == 0:
             _shift_obs_dir = os.path.join("research_files", "shifting_behavior")
             os.makedirs(_shift_obs_dir, exist_ok=True)
             with open(os.path.join(_shift_obs_dir, f"iter{i:03d}_post_solve.txt"), "w") as f:
                 controller.pprint(ostream=f)
-
-        if options.debug_flag:
-            _report_constraint_violations(
-                controller._model, label=f"controller iteration {i}"
-            )
 
         # Update Lyapunov stability constraint parameters for next iteration
         if options.lyap_flag:
@@ -176,9 +172,10 @@ def mpc_loop(options: Options):
             lyap_block = controller
             if options.infinite_horizon:
                 stage_block = controller.finite_block
+                lyap_beta = getattr(options, 'lyap_beta', 1.2)
                 V_current = (
                     pyo.value(controller.finite_block.phi_track)
-                    + pyo.value(
+                    + lyap_beta * pyo.value(
                         controller.infinite_block.phi_track[
                             controller.infinite_block.time.last()
                         ]
@@ -254,6 +251,7 @@ def mpc_loop(options: Options):
                 plant._model.pprint(ostream=f)
 
         plant.solve()
+        _clip_to_bounds(plant._model)
 
         # Collect CV and MV values at the sampling time
         full_data = plant.interface.get_data_at_time(options.sampling_time)
