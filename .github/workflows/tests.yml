@@ -59,7 +59,7 @@ jobs:
       # The fork adds clean_model='delete' to the DAE collocation transform.
       # ------------------------------------------------------------------
       - name: Install forked Pyomo (oag00002/pyomo@mpc-rewrite)
-        run: pip install git+https://github.com/oag00002/pyomo.git@mpc-rewrite
+        run: pip install --force-reinstall --no-deps git+https://github.com/oag00002/pyomo.git@mpc-rewrite
 
       - name: Run tests
         run: python -m pytest tests/ -q
