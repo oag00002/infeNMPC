@@ -32,6 +32,9 @@ Thumbs.db
 # Research/archive files (not part of the codebase)
 research_files/
 
+# Report (generated locally, not tracked)
+report/
+
 # Distribution / packaging
 dist/
 build/
