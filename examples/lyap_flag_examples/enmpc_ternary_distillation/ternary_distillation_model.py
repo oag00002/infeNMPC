@@ -15,10 +15,9 @@ CVs:    xD1A (A purity in D1), xD2B (B purity in D2), xC (C purity in B2)
 Objective: minimize feed + energy cost minus product revenue
            cost = pF*F + pV*(VB1+VB2) - pA*D1 - pB*D2 - pC*B2
 
-Slack variables match column2_dynamic_soft.mod from the AMPL reference:
-  x1_eps[tray,comp,t]  -- composition lower-bound slacks (also used for xD1A purity, const45)
-  x2_eps[tray,comp,t]  -- composition lower-bound slacks (also used for xD2B purity, const46)
-  xC_eps[t]            -- xC purity slack (const47, x2ceps in AMPL)
+Slack variables (slack_index — physical relaxations):
+  x1_eps[tray,comp,t]  -- composition lower-bound slacks Col 1
+  x2_eps[tray,comp,t]  -- composition lower-bound slacks Col 2
   M1_eps[tray,t]       -- holdup band slacks Col 1
   M2_eps[tray,t]       -- holdup band slacks Col 2
   V1_eps[tray,t]       -- vapor flow lower-bound slacks Col 1 (trays 1-40 active)
@@ -27,6 +26,11 @@ Slack variables match column2_dynamic_soft.mod from the AMPL reference:
   L2_eps[tray,t]       -- liquid flow lower-bound slacks Col 2 (trays 2-41 active)
   D1_eps[t], B1_eps[t] -- MV soft-bound slacks Col 1
   D2_eps[t], B2_eps[t] -- MV soft-bound slacks Col 2
+
+Specification slacks (spec_slack_index — product-purity lower bounds):
+  xD1A_eps[t]  -- A purity in Col 1 distillate (const45, formerly x1_eps[41,1,t])
+  xD2B_eps[t]  -- B purity in Col 2 distillate (const46, formerly x2_eps[41,2,t])
+  xC_eps[t]    -- C purity in Col 2 bottoms    (const47, x2ceps in AMPL)
   (TC eps omitted: no temperature variables in this model)
 """
 import pyomo.environ as pyo
@@ -58,16 +62,25 @@ def variables_initialize(m):
     m.CV_index = pyo.Set(initialize=["xD1A", "xD2B", "xC"])
     m.CV_display_names = ["x_{D1,A}", "x_{D2,B}", "x_{B2,C}"]
 
-    # Slack variables matching column2_dynamic_soft.mod.
-    # x1_eps/x2_eps serve dual purpose: composition lower-bound AND CV purity (const45/46).
+    # Physical relaxation slacks — fixed to 0 in SS NLP, unfixed/refixed around
+    # plant load_data, and (for tracking objective) penalised via slack_penalty_weight.
     m.slack_index = pyo.Set(initialize=[
         "x1_eps", "x2_eps",
         "M1_eps", "M2_eps",
         "V1_eps", "V2_eps",
         "L1_eps", "L2_eps",
-        "xC_eps",
         "D1_eps", "B1_eps", "D2_eps", "B2_eps",
     ])
+
+    # Specification slacks — product-purity lower bounds (spec values, not physical
+    # relaxations).  Fixed to 0 in SS NLP like slack_index, but penalised directly
+    # in custom_objective rather than via the generic slack_penalty_weight mechanism.
+    m.spec_slack_index = pyo.Set(initialize=["xD1A_eps", "xD2B_eps", "xC_eps"])
+
+    # Names of the inequality constraints that reference spec_slack_index variables.
+    # Plant.__init__ uses this list to deactivate those constraints when fixing
+    # spec slacks at 0, so the plant NLP is square (pure physics, no spec enforcement).
+    m.spec_lb_constraint_index = pyo.Set(initialize=["xD1A_lb", "xD2B_lb", "xC_lb"])
 
     # ---- System Parameters ----
     m.NT = pyo.Param(initialize=41)   # Number of trays
@@ -151,8 +164,7 @@ def variables_initialize(m):
     m.xC = pyo.Var(m.time, initialize=0.9, bounds=(0, 1))    # C purity in Col 2 bottoms
 
     # ---- Slack Variables ----
-    # Composition lower-bound slacks (x1_eps[NT,1,t] also used for xD1A purity const45;
-    # x2_eps[NT,2,t] also used for xD2B purity const46 — matches AMPL x1eps/x2eps).
+    # Composition lower-bound slacks (physical relaxation only — purity specs use xD1A_eps etc.)
     m.x1_eps = pyo.Var(m.tray, m.comp, m.time, initialize=0.0, bounds=(0, None))
     m.x2_eps = pyo.Var(m.tray, m.comp, m.time, initialize=0.0, bounds=(0, None))
 
@@ -168,7 +180,11 @@ def variables_initialize(m):
     m.L1_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
     m.L2_eps = pyo.Var(m.tray, m.time, initialize=0.0, bounds=(0, None))
 
-    # xC purity slack (x2ceps in AMPL, const47)
+    # Specification slacks (spec_slack_index) — one per CV purity constraint.
+    # Dedicated variables so that x1_eps/x2_eps serve only as composition lower-bound
+    # slacks and the purity penalties are explicit in custom_objective.
+    m.xD1A_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
+    m.xD2B_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
     m.xC_eps = pyo.Var(m.time, initialize=0.0, bounds=(0, None))
 
     # MV soft-bound slacks for D1, B1, D2, B2
@@ -438,16 +454,16 @@ def equations_write(m):
     # ========================================================================
 
     # ---- CV Purity Lower Bounds (const45/46/47) ----
-    # x1_eps[41,1,t] and x2_eps[41,2,t] reuse the composition slack at the top tray,
-    # matching the AMPL pattern where x1eps/x2eps serve both purposes.
+    # Each purity spec uses its own dedicated slack (spec_slack_index).
+    # x1_eps/x2_eps are reserved for composition lower-bound slacks only.
     m.xD1A_lb = pyo.Constraint(
-        m.time, rule=lambda m, t: m.xD1A[t] >= m.setpoints['xD1A'] - m.x1_eps[41, 1, t]
+        m.time, rule=lambda m, t: m.xD1A[t] >= 0.95 - m.xD1A_eps[t]
     )
     m.xD2B_lb = pyo.Constraint(
-        m.time, rule=lambda m, t: m.xD2B[t] >= m.setpoints['xD2B'] - m.x2_eps[41, 2, t]
+        m.time, rule=lambda m, t: m.xD2B[t] >= 0.95 - m.xD2B_eps[t]
     )
     m.xC_lb = pyo.Constraint(
-        m.time, rule=lambda m, t: m.xC[t] >= m.setpoints['xC'] - m.xC_eps[t]
+        m.time, rule=lambda m, t: m.xC[t] >= 0.95 - m.xC_eps[t]
     )
 
     # ---- Composition Lower Bounds (x1lower / x2lower) ----
@@ -494,15 +510,11 @@ def equations_write(m):
     m.L1_lower = pyo.Constraint(m.tray, m.time, rule=L1_lower_rule)
     m.L2_lower = pyo.Constraint(m.tray, m.time, rule=L2_lower_rule)
 
-    # ---- MV Soft Bounds for D1, B1, D2, B2 (lower=0, upper=2, matches AMPL) ----
+    # ---- MV Soft Lower Bounds for D1, B1, D2, B2 (no upper bound, matches AMPL) ----
     m.D1_lower = pyo.Constraint(m.time, rule=lambda m, t: m.D1[t] >= -m.D1_eps[t])
-    m.D1_upper = pyo.Constraint(m.time, rule=lambda m, t: m.D1[t] <= 2 + m.D1_eps[t])
     m.B1_lower = pyo.Constraint(m.time, rule=lambda m, t: m.B1[t] >= -m.B1_eps[t])
-    m.B1_upper = pyo.Constraint(m.time, rule=lambda m, t: m.B1[t] <= 2 + m.B1_eps[t])
     m.D2_lower = pyo.Constraint(m.time, rule=lambda m, t: m.D2[t] >= -m.D2_eps[t])
-    m.D2_upper = pyo.Constraint(m.time, rule=lambda m, t: m.D2[t] <= 2 + m.D2_eps[t])
     m.B2_lower = pyo.Constraint(m.time, rule=lambda m, t: m.B2[t] >= -m.B2_eps[t])
-    m.B2_upper = pyo.Constraint(m.time, rule=lambda m, t: m.B2[t] <= 2 + m.B2_eps[t])
 
     return m
 
@@ -531,22 +543,21 @@ def custom_objective(m, options):
             pB * m.D2[t] -
             pC * m.B2[t]
         )
+        # penalty_spec: CV purity specification slacks (spec_slack_index)
+        pen_spec = m.xD1A_eps[t] + m.xD2B_eps[t] + m.xC_eps[t]
         # penalty_2: MV bound slacks
         pen_mv = m.D1_eps[t] + m.B1_eps[t] + m.D2_eps[t] + m.B2_eps[t]
         # penalty_M_TC: holdup slacks (TC omitted)
         pen_M = sum(m.M1_eps[k, t] + m.M2_eps[k, t] for k in m.tray)
-        # penalty_x_y: composition slacks + xC purity slack
-        pen_x = (
-            m.xC_eps[t] +
-            sum(m.x1_eps[k, j, t] + m.x2_eps[k, j, t] for k in m.tray for j in m.comp)
-        )
+        # penalty_x_y: composition lower-bound slacks only (purity slacks are in pen_spec)
+        pen_x = sum(m.x1_eps[k, j, t] + m.x2_eps[k, j, t] for k in m.tray for j in m.comp)
         # penalty_V_L: sum over all tray indices so every V_eps/L_eps entry appears
         # in the objective (prevents presolve underdetermined warnings for unused indices).
         pen_VL = sum(
             m.V1_eps[k, t] + m.V2_eps[k, t] + m.L1_eps[k, t] + m.L2_eps[k, t]
             for k in m.tray
         )
-        return econ + rho * (pen_mv + pen_M + pen_x + pen_VL)
+        return econ + rho * (pen_spec + pen_mv + pen_M + pen_x + pen_VL)
 
     return stage_cost
 

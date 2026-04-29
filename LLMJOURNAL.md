@@ -1,5 +1,70 @@
 # Next Tasks
 
+## Solver Hardening + `revive_run` Flag (2026-04-29)
+
+**Branch:** `binary-distillation`
+
+### Problem: random "restoration phase converged to small primal infeasibility" failures
+
+The MPC loop was failing randomly around 90% of the way through long runs with:
+```
+Restoration phase converged to a point with small primal infeasibility.
+```
+IPOPT output showed restoration iterating at constant `inf_pr ≈ 2.38e-7`,
+`inf_du ≈ 1e-14`, `mu ≈ 10^{-8.8}`, step halved every iteration (filter rejection),
+constant objective. The solution was essentially already found — the failure was purely
+numerical.
+
+**Root cause:** `bound_relax_factor = 0` in the warm solver is too strict. After
+`shift_values_by_time + IC load`, the warm-started point has a floating-point residual
+(~2.38e-7) that lies just outside a bound. Restoration minimises constraint violation
+but cannot reach zero because the restoration problem's optimum requires a tiny bound
+violation — which `bound_relax_factor = 0` disallows.
+
+`bound_relax_factor = 0` was historically intentional: it prevented IPOPT from returning
+slightly out-of-bound values that then caused downstream `set_value()` failures on
+`NonNegativeReals` slack variables (e.g., slack set to `-1e-9`). The fix to allow
+`bound_relax_factor = 1e-8` safely is to add a post-solve bound-clip step.
+
+---
+
+### Changes
+
+**`infeNMPC/make_model.py`** — `_ipopt_warm_solver`:
+- Removed the stale `bound_relax_factor = 0` line (was overriding itself to 0 before new code added 1e-8 below it — cleaned up)
+- Added `bound_relax_factor = 1e-8`
+- Added `acceptable_tol = 1e-5`, `acceptable_constr_viol_tol = 1e-4`, `acceptable_obj_change_tol = 1e20`, `acceptable_iter = 3` (secondary safety net: if 3 consecutive iterations are all within these looser tolerances, IPOPT exits as "Solved to Acceptable Level" = `TerminationCondition.optimal`)
+- Added `_ipopt_revive_solver()`: same as warm solver plus `tol = 1e-6`
+
+**`infeNMPC/tools/solver_tools.py`** — **new file**:
+- `_clip_to_bounds(model)`: iterates all Var data objects; clips any value outside `[lb, ub]` back to the bound. Called after every successful controller solve. Handles the downstream concern from `bound_relax_factor != 0`.
+- `_attempt_revive(controller, i, options, caught_exc)`: retry logic. If `revive_run > 0` and TC is not `infeasible` or `maxIterations`, retries up to `revive_run` times using `controller.revive_solve()` with clear print messages. Re-raises caught_exc or the last revive failure on exhaustion.
+- `_SKIP_REVIVE = frozenset({infeasible, maxIterations})`
+
+**`infeNMPC/controllers.py`**:
+- Imports `_ipopt_revive_solver`
+- `Controller.__init__`: adds `self._revive_solver = _ipopt_revive_solver()`
+- `Controller.solve()` except block: stores `self.last_tc = results.solver.termination_condition` before re-raising (so `_attempt_revive` can inspect it)
+- New `Controller.revive_solve()` method: calls `_revive_solver`, sets `self.last_solve_time = revive_time` (assignment, not accumulation — failed initial solve not counted)
+
+**`infeNMPC/infNMPC_options.py`**:
+- `revive_run: int = 0` field + docstring
+
+**`infeNMPC/run_MPC.py`**:
+- Imports `_clip_to_bounds`, `_attempt_revive` from `tools.solver_tools`
+- Replaced the old try/except (which always re-raised) with:
+  ```python
+  try:
+      controller.solve()
+  except RuntimeError as exc:
+      _attempt_revive(controller, i, options, exc)
+  _clip_to_bounds(controller._model)
+  cpu_time.append(controller.last_solve_time)
+  ```
+- `cpu_time.append` moved to after `_clip_to_bounds`
+
+---
+
 ## Tracking Objective: Slack Penalty & AMPL-Consistent Weights (2026-04-21)
 
 **Branch:** `fix-tracking`
@@ -516,65 +581,26 @@ collocation point of each element instead.
 
 ---
 
-## Fix initial condition solve — always solve the iv model
+## ~~Fix initial condition solve — always solve the iv model~~ (Done)
 
-**Files:** `infeNMPC/make_model.py` — `_make_finite_horizon_model` and `_make_infinite_horizon_model`
+**Done as of binary-distillation branch.** The `if all(var in CV_index...)` shortcut no longer
+exists in `make_model.py`. Both `_make_finite_horizon_model` and `_make_infinite_horizon_model`
+call `_build_ic_data(options)` unconditionally, which routes to `_build_ic_data_steady_state` →
+`_solve_steady_state_model`. The returned `ScalarData` contains consistent values for all
+variables (not just CVs), so every state variable at `t=0` is correctly initialized.
 
-### The bug
+**Original description of the bug and fix (preserved for history):**
 
-Both functions contain this shortcut:
-
+Both orchestrators formerly contained:
 ```python
-initial_value_vars = list(m_iv.initial_values.index_set())
 if all(var in m_iv.CV_index for var in initial_value_vars):
-    initial_data = ScalarData({
-        _get_variable_key_for_data(m_iv, cv): pyo.value(m_iv.initial_values[cv])
-        for cv in initial_value_vars
-    })
+    initial_data = ScalarData({...})   # SKIP — only CV values, no state vars
 else:
-    ...
-    initial_data = _solve_steady_state_model(m_iv, m_iv_target, options, label="iv")
+    initial_data = _solve_steady_state_model(...)
 ```
-
-When `initial_values` is indexed only by `CV_index` (as in every current example), the
-iv solve is skipped entirely. The resulting `initial_data` contains **only the CV values** —
-nothing for the non-CV state variables.
-
-### Why this is wrong
-
-`m.interface.load_data(initial_data, time_points=t_first)` then loads this sparse data into
-the finite block at `t=0`. State variables not in `initial_data` are left at their Pyomo
-`initialize=...` defaults. Those defaults are model-author-supplied guesses — **not**
-generally consistent with the algebraic constraints or ODEs at `t=0`.
-
-For the ternary distillation model, the CVs (`xD1A`, `xD2B`, `xC`) are algebraic — they are
-not themselves differential state variables. The 246 actual state variables (`x1[tray,comp]`,
-`M1[tray]`, `x2[tray,comp]`, `M2[tray]`) all have `initialize=...` values that may not be
-consistent with those CV targets. `_fix_initial_conditions_at_t0` correctly handles the one
-tray entry per CV that is linked through a defining constraint (e.g. `x1[41,1,0]` through
-`xD1A_def`), but the remaining ~240 state variables at `t=0` are just fixed at their guesses.
-
-There is also no good reason for the shortcut in the first place. Solving the iv model when
-`initial_values` only contains CVs is harmless: the solver targets those CV values and returns
-a fully consistent `ScalarData` for all variables, including all the differential states. That
-gives every state variable a physically consistent IC instead of an independent guess.
-
-### Fix
-
-Remove the `if all(var in m_iv.CV_index ...)` branch entirely. Always build `m_iv_target`
-from `m_iv.initial_values` and call `_solve_steady_state_model` regardless of whether the
-initial variables are CVs or not. The returned `initial_data` will then contain consistent
-values for all variables, which `load_data` can spread across `t=0`.
-
-```python
-m_iv_target = ScalarData({
-    _get_variable_key_for_data(m_iv, var): pyo.value(m_iv.initial_values[var])
-    for var in initial_value_vars
-})
-initial_data = _solve_steady_state_model(m_iv, m_iv_target, options, label="iv")
-```
-
-Apply this change in both `_make_finite_horizon_model` and `_make_infinite_horizon_model`.
+When `initial_values` only contained CVs (every current example), the iv solve was skipped,
+leaving the 240+ non-CV state variables at their potentially inconsistent `initialize=` guesses.
+Fix: remove the branch; always call `_solve_steady_state_model` via `_build_ic_data`.
 
 ---
 

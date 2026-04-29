@@ -2,7 +2,7 @@
 Plant model for closed-loop NMPC simulations.
 """
 import pyomo.environ as pyo
-from .make_model import _make_finite_horizon_model, _ipopt_solver, _check_optimal
+from .make_model import _make_finite_horizon_model, _ipopt_warm_solver, _check_optimal
 from .infNMPC_options import Options
 from .tools.debug_tools import _report_constraint_violations
 
@@ -63,6 +63,27 @@ class Plant:
                             and hasattr(m, f"{sv_name}_interpolation_constraints")):
                         getattr(m, f"{sv_name}_interpolation_constraints").deactivate()
 
+        # Spec slack vars (spec_slack_index) — fixed at 0 in the plant.
+        # The plant is a pure physics simulation (obj=1 constant); spec constraints
+        # have no penalty so spec slacks are genuinely free, making the NLP
+        # under-determined (9 extra DOF for 3 slacks × 3 collocation points).
+        # Fix them at 0 and deactivate the associated spec lb constraints so the
+        # plant NLP is square.  Models advertise the constraint names via the
+        # optional spec_lb_constraint_index Set.
+        if hasattr(m, 'spec_slack_index'):
+            for sv_name in m.spec_slack_index:
+                sv_var = getattr(m, sv_name, None)
+                if sv_var is not None and isinstance(sv_var, pyo.Var):
+                    if (options.ncp_finite > 1
+                            and hasattr(m, f"{sv_name}_interpolation_constraints")):
+                        getattr(m, f"{sv_name}_interpolation_constraints").deactivate()
+                    sv_var.fix(0)
+        if hasattr(m, 'spec_lb_constraint_index'):
+            for con_name in m.spec_lb_constraint_index:
+                con = getattr(m, con_name, None)
+                if con is not None:
+                    con.deactivate()
+
         m.obj = pyo.Objective(expr=1)
 
         if plant_options.model_output_dir:
@@ -71,11 +92,17 @@ class Plant:
             with open(os.path.join(plant_options.model_output_dir, "plant_model.txt"), "w") as f:
                 m.pprint(ostream=f)
 
-        with open("plant_model.txt", "w") as f:
-            m.pprint(ostream=f)
+        if plant_options.debug_flag:
+            with open("plant_model.txt", "w") as f:
+                m.pprint(ostream=f)
 
         self._model = m
-        self._solver = _ipopt_solver()
+        # Plant is always warm-started from the controller's first-FE solution,
+        # so it never needs strict bound enforcement.  _ipopt_warm_solver includes
+        # bound_relax_factor=1e-8 and acceptable_* settings that prevent the same
+        # "restoration phase converged to small primal infeasibility" pattern seen
+        # in the controller warm solves.
+        self._solver = _ipopt_warm_solver()
 
     def solve(self):
         """Solve the plant model in place."""

@@ -134,6 +134,12 @@ class Options:
     debug_flag : bool
         If True, print the most violated constraints after every controller
         solve (and before re-raising on solver failure).
+    revive_run : int
+        Maximum number of times to retry a failed controller solve using
+        relaxed IPOPT settings (``bound_relax_factor=1e-8``, ``tol=1e-6``)
+        before aborting the run.  ``0`` disables retry.  Not applied when the
+        termination condition is ``infeasible`` or ``maxIterations``.
+        Default: ``0``.
     dynamic_initial_conditions : bool
         If True, use the dynamic IC path: state variables are fixed to their
         ``initialize=`` values (with optional scalar overrides from
@@ -214,6 +220,7 @@ class Options:
 
     # Debugging
     debug_flag: bool = False
+    revive_run: int = 0
 
     # Initial condition mode
     dynamic_initial_conditions: bool = False
