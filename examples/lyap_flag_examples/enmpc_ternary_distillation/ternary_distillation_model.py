@@ -145,16 +145,18 @@ def variables_initialize(m):
     # ---- Column 1 Manipulated Variables ----
     m.VB1 = pyo.Var(m.time, initialize=4.008, bounds=(0, 10))   # Boilup
     m.LT1 = pyo.Var(m.time, initialize=3.437, bounds=(0, 10))   # Reflux
-    # D1/B1 hard bounds (0,5) anchor SS/IV solves; soft bounds [0,2] added in equations_write.
-    m.D1 = pyo.Var(m.time, initialize=0.57, bounds=(0, 5))
-    m.B1 = pyo.Var(m.time, initialize=0.83, bounds=(0, 5))
+    # D1/B1: no hard bounds — AMPL has none. Soft lower bound at 0 via D1_lower/B1_lower
+    # constraints in equations_write (D1 >= -D1_eps).
+    m.D1 = pyo.Var(m.time, initialize=0.57, bounds=(None, None))
+    m.B1 = pyo.Var(m.time, initialize=0.83, bounds=(None, None))
 
     # ---- Column 2 Manipulated Variables ----
     m.VB2 = pyo.Var(m.time, initialize=2.404, bounds=(0, 10))   # Boilup
     m.LT2 = pyo.Var(m.time, initialize=2.138, bounds=(0, 10))   # Reflux
-    # D2/B2 hard bounds (0,5) anchor SS/IV solves; soft bounds [0,2] added in equations_write.
-    m.D2 = pyo.Var(m.time, initialize=0.26, bounds=(0, 5))
-    m.B2 = pyo.Var(m.time, initialize=0.56, bounds=(0, 5))
+    # D2/B2: no hard bounds — AMPL has none. Soft lower bound at 0 via D2_lower/B2_lower
+    # constraints in equations_write (D2 >= -D2_eps).
+    m.D2 = pyo.Var(m.time, initialize=0.26, bounds=(None, None))
+    m.B2 = pyo.Var(m.time, initialize=0.56, bounds=(None, None))
 
     # ---- Controlled Variable Algebraic Variables ----
     # Declared as Var (not Expression) so the framework can load/extract data by key.
