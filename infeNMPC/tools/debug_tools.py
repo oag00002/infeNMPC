@@ -3,6 +3,95 @@ Debugging utilities for infeNMPC Pyomo models.
 """
 import pyomo.environ as pyo
 
+# Threshold separating "truly optimal" IPOPT residuals (~1e-10) from
+# "acceptable" residuals (~1e-7).  Any equality-constraint violation above
+# this value at a nominally-successful solve indicates IPOPT exited via the
+# acceptable-level criterion rather than true KKT optimality.
+_IPOPT_OPTIMAL_TOL = 5e-8
+
+
+def _report_acceptable_termination(model, results=None, label=""):
+    """
+    Detect and report constraints that prevented true optimal convergence.
+
+    When IPOPT exits via the acceptable-level criterion (inf_pr ~1e-7)
+    instead of true KKT optimality (inf_pr ~1e-10), this function prints
+    a clear warning and lists the equality-constraint violations responsible.
+
+    Detection is attempted in two ways, in order:
+    1. The IPOPT solver-exit message is inspected for the word "acceptable".
+    2. Fallback: any active constraint with residual > ``_IPOPT_OPTIMAL_TOL``
+       (5e-8) is taken as evidence of acceptable termination.
+
+    Parameters
+    ----------
+    model : pyo.ConcreteModel or pyo.Block
+        The model that was just solved.
+    results : solver results object, optional
+        The object returned by ``solver.solve()``.  When provided, the IPOPT
+        exit message is checked first.  When absent or when the message
+        attribute is unavailable, falls back to the constraint-violation check.
+    label : str
+        Optional label appended to the report header.
+
+    Returns
+    -------
+    bool
+        ``True`` if acceptable termination was detected and reported,
+        ``False`` if the solve appears to have reached true optimality.
+    """
+    is_acceptable = False
+
+    # ---- Primary detection: IPOPT solver exit message ----
+    if results is not None:
+        solver_obj = getattr(results, 'solver', None)
+        if solver_obj is not None:
+            for attr in ('message', 'termination_message'):
+                try:
+                    msg = getattr(solver_obj, attr, None) or ''
+                    if 'acceptable' in str(msg).lower():
+                        is_acceptable = True
+                        break
+                except Exception:
+                    pass
+
+    # ---- Fallback detection: constraint violations above optimal tolerance ----
+    if not is_acceptable:
+        for con in model.component_objects(pyo.Constraint, active=True, descend_into=True):
+            for idx in con:
+                condata = con[idx]
+                try:
+                    body_val = pyo.value(condata.body, exception=False)
+                except Exception:
+                    continue
+                if body_val is None:
+                    continue
+                lower = pyo.value(condata.lower) if condata.lower is not None else None
+                upper = pyo.value(condata.upper) if condata.upper is not None else None
+                if lower is not None and upper is not None and lower == upper:
+                    viol = abs(body_val - lower)
+                else:
+                    viol = 0.0
+                    if lower is not None:
+                        viol = max(viol, lower - body_val)
+                    if upper is not None:
+                        viol = max(viol, body_val - upper)
+                if viol > _IPOPT_OPTIMAL_TOL:
+                    is_acceptable = True
+                    break
+            if is_acceptable:
+                break
+
+    if is_acceptable:
+        suffix = f"  [{label}]" if label else ""
+        print(f"\n{'!'*60}")
+        print(f"  Acceptable termination{suffix}")
+        print(f"  Constraints preventing optimal convergence (residual > {_IPOPT_OPTIMAL_TOL:.0e}):")
+        print(f"{'!'*60}")
+        _report_constraint_violations(model, n=10, tol=_IPOPT_OPTIMAL_TOL, label=label)
+
+    return is_acceptable
+
 
 def _report_constraint_violations(model, n=10, tol=1e-6, label=""):
     """

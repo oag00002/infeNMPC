@@ -6,7 +6,7 @@ import pyomo.environ as pyo
 from .make_model import _make_infinite_horizon_model, _make_finite_horizon_model, _ipopt_solver, _ipopt_warm_solver, _ipopt_revive_solver, _check_optimal
 from .model_equations import _get_model
 from .tools.indexing_tools import _add_time_indexed_expression
-from .tools.debug_tools import _report_constraint_violations
+from .tools.debug_tools import _report_constraint_violations, _report_acceptable_termination
 from .infNMPC_options import Options
 
 
@@ -43,6 +43,7 @@ class Controller:
         solver = self._warm_solver if self._initialized else self._solver
         before = resource.getrusage(resource.RUSAGE_CHILDREN)
         results = solver.solve(self._model, tee=self.options.tee_flag)
+        self.last_results = results
         try:
             _check_optimal(results)
         except RuntimeError:
@@ -55,7 +56,9 @@ class Controller:
         self.last_solve_time = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
         if self.options.debug_flag:
             label = "controller initial solve" if not self._initialized else "controller solve"
-            _report_constraint_violations(self._model, label=label)
+            reported = _report_acceptable_termination(self._model, results, label=label)
+            if not reported:
+                _report_constraint_violations(self._model, label=label)
         self._initialized = True
 
     def revive_solve(self):
@@ -70,6 +73,7 @@ class Controller:
         """
         before = resource.getrusage(resource.RUSAGE_CHILDREN)
         results = self._revive_solver.solve(self._model, tee=self.options.tee_flag)
+        self.last_results = results
         try:
             _check_optimal(results)
         except RuntimeError:

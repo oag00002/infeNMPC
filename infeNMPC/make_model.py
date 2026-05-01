@@ -127,6 +127,7 @@ def _ipopt_solver():
     solver = pyo.SolverFactory('ipopt_v2')
     solver.options['linear_solver'] = 'ma57'
     solver.options['OF_ma57_automatic_scaling'] = 'yes'
+    solver.options['nlp_scaling_method'] = 'user-scaling'
     solver.options['max_iter'] = 6000
     solver.options['halt_on_ampl_error'] = 'yes'
     solver.options['bound_relax_factor'] = 0
@@ -174,6 +175,7 @@ def _ipopt_warm_solver():
     # than being projected further into the interior at the start of each solve.
     solver.options['bound_push'] = 1e-8
     solver.options['bound_frac'] = 1e-8
+    solver.options['nlp_scaling_method'] = 'user-scaling'
     # bound_relax_factor = 0 (IPOPT default): enforce bounds exactly.  Relaxing
     # this to 1e-8 changes the barrier NLP enough that IPOPT exits via the
     # default acceptable_iter=15 criterion with inf_pr~4.8e-7 (equality residual),
@@ -201,6 +203,7 @@ def _ipopt_revive_solver():
     solver.options['bound_relax_factor'] = 1e-8
     solver.options['bound_push'] = 1e-8
     solver.options['bound_frac'] = 1e-8
+    solver.options['nlp_scaling_method'] = 'user-scaling'
     solver.options['tol'] = 1e-6
     return solver
 
@@ -879,22 +882,40 @@ def _infinite_block_gen(m, options):
 
     _model.equations_write(m)
 
-    # LEGENDRE: delete all constraint entries at t=0 and t=1 written by
-    # equations_write.  Neither endpoint is a collocation point.  Pyomo's
-    # continuity equations already pin the differential state variables there;
-    # the user's constraint entries at these endpoints are spurious and cause
-    # IPOPT to see more equality constraints than free variables (TOO_FEW_DOF).
-    # terminal_cost and phi_track_ode are unaffected — they already return
-    # Constraint.Skip at t=0 and t=1, so no entries exist there to delete.
+    # LEGENDRE: delete endpoint entries added by equations_write only.
+    # Pyomo's DAE continuity equations (*_time_cont_eq) must be preserved —
+    # they pin differential state variables at element boundaries and at τ=1.
+    # Previously the loop deleted ALL constraints at t=0 and t=1, including
+    # phi_time_cont_eq[1] and phi_track_time_cont_eq[1], leaving phi[1] and
+    # phi_track[1] as free variables.  The optimizer drove them to zero,
+    # making the infinite-horizon terminal cost effectively inactive.
     _t0_del = m.time.first()
     _t1_del = m.time.last()
+    _dae_suffixes = ('_disc_eq', '_time_cont_eq')
     for _con in m.component_objects(pyo.Constraint):
+        if any(_con.local_name.endswith(s) for s in _dae_suffixes):
+            continue  # preserve Pyomo DAE continuity / discretisation equations
         _keys_to_del = [
             _idx for _idx in list(_con.keys())
             if (_idx[-1] if isinstance(_idx, tuple) else _idx) in (_t0_del, _t1_del)
         ]
         for _idx in _keys_to_del:
             del _con[_idx]
+
+    # Scaling: phi values grow to O(ss_obj_value * T_s / gamma) due to the
+    # vanishing (1-τ²) weight near τ=1.  Without explicit scaling the
+    # dphidt_disc_eq and phi_time_cont_eq bodies involve terms O(30 × phi),
+    # whose machine-precision floors (~10^-7 for phi~10^8) exceed IPOPT's
+    # optimal tolerance (1e-8), causing all solves to exit acceptably.
+    # Scaling phi and dphidt by 1/phi_ref moves these residuals to O(1e-14).
+    if options.objective == 'economic' and hasattr(m, 'ss_obj_value'):
+        _phi_ref = max(abs(float(pyo.value(m.ss_obj_value))) * options.sampling_time / gamma, 1.0)
+        m.scaling_factor = pyo.Suffix(direction=pyo.Suffix.EXPORT)
+        _sf = 1.0 / _phi_ref
+        for _t in m.time:
+            m.scaling_factor[m.phi[_t]] = _sf
+            if _t in m.dphidt:
+                m.scaling_factor[m.dphidt[_t]] = _sf
 
     # --- Terminal constraints for the infinite-horizon block ---
     #

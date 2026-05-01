@@ -37,7 +37,7 @@ infeNMPC/
 │   ├── live_plot.py                 # Live monitoring subprocess (used with safe_run=True)
 │   └── tools/
 │       ├── collocation_tools.py     # _compute_gamma_from_collocation()
-│       ├── debug_tools.py           # _report_constraint_violations()
+│       ├── debug_tools.py           # _report_constraint_violations(), _report_acceptable_termination()
 │       ├── indexing_tools.py        # Variable key helpers, expression builders
 │       └── initialization_tools.py  # Progressive sampling-time warm-start
 ├── examples/
@@ -110,7 +110,7 @@ options.copy(**overrides)                      # immutable-style copy with chang
 | `disturb_flag` | `False` | Apply random plant disturbances |
 | `disturb_distribution` | `'normal'` | Disturbance distribution type |
 | `disturb_seeded` | `True` | Use fixed random seed |
-| `debug_flag` | `False` | Print most-violated constraints after every controller solve and on failures |
+| `debug_flag` | `False` | After every controller solve: detect and report acceptable-level IPOPT termination (prints violated constraints with residual > 5e-8 `_IPOPT_OPTIMAL_TOL`); also reports violations on solve failures. Uses `_report_acceptable_termination` and `_report_constraint_violations` in `debug_tools.py`. |
 | `revive_run` | `0` | Max retry attempts on a failed warm solve using relaxed IPOPT settings (`bound_relax_factor=1e-8`, `tol=1e-6`). `0` = disabled. Not retried for `infeasible` or `maxIterations`. |
 | `dynamic_initial_conditions` | `False` | Use dynamic IC path (fix state vars to `initialize=` values, solve for algebraic vars only) instead of SS-NLP |
 
@@ -350,6 +350,7 @@ This is the most complex file. It builds Pyomo models in stages.
   - `phi_track[0].fix(0)`; `phi_track_ode` defines its dynamics (starts at 0, independent of finite block)
   - Terminal constraints (when `terminal_constraint_type != 'none'`): `diff_terminal_constraints` for differential CVs (direct τ=1 access); `alg_terminal_constraints` for algebraic CVs/MVs (Lagrange extrapolation to τ=1). For `'soft'`, an `infinite_terminal_soft_penalty` Expression is built instead and added to the objective by the controller.
 - **Derivative transformation** (`_transform_model_derivatives`): Replaces all `dxdt[t]` in user constraints with `(gamma/sampling_time * (1 - t²)) * dxdt[t]`. Skips `*_disc_eq`, `terminal_cost`, and `phi_track_ode` constraints.
+- **Endpoint deletion** (after `equations_write`): removes user-model constraint entries at t=0 and t=1 (non-collocation endpoints). **Critically, Pyomo's DAE continuity equations (`*_time_cont_eq`, `*_disc_eq`) are PRESERVED** — these pin differential state variables (including `phi[1]` and `phi_track[1]`) at the element boundaries and at τ=1 via Lagrange polynomial extrapolation from the last element's GL points. Prior to the fix on branch `fix/debug-tools-and-phi-continuity`, the loop deleted ALL constraints at t=0/1, including `phi_time_cont_eq[1]`, leaving `phi[1]` as a free variable and silently disabling the infinite-horizon terminal cost.
 
 ### Infinite-Horizon Lyapunov Constraint (top-level model, set in `_make_infinite_horizon_model`)
 
@@ -743,16 +744,18 @@ This model uses **algebraic CVs** (`xD1A`, `xD2B`, `xC` are computed from tray c
 
 ---
 
-## Known Issues / State at Last Review (2026-04-29)
+## Known Issues / State at Last Review (2026-05-01)
 
-- Branch: `binary-distillation`
+- Active fix branch: `fix/debug-tools-and-phi-continuity`
 - Most examples are not confirmed working; the CSTR lyap_flag example is the primary test case
-- **Ternary distillation lyap example confirmed working** (5 iterations, all IPOPT-optimal, constraint violations at 1e-12 to 1e-15 numerical precision). See LLMJOURNAL.md "Plant Squareness & Warm-Start" entry for full history.
 - `model_output.txt` is written to the working directory at controller construction time (`controllers.py`). This is debug behavior.
 - `gamma` in the results folder path reflects `options.gamma` (which stays `None` until the block stores it on `infinite_block.gamma` — the folder path may show `gamma_None` even after auto-computation)
 - **Pending cleanup items**:
   - `run_MPC.py`: pprint dumps for iterations 0 and 1 (controller post-solve and plant pre-solve) gated by `debug_flag and i <= 1` — acceptable for debugging, but can be removed for production
-- **Resolved items** (fixed on `binary-distillation` branch):
+- **Open issue — phi scaling for economic MPC** (`fix/debug-tools-and-phi-continuity` branch): After the phi continuity fix (Bug 1), phi values at GL points reach O(10^7–10^8) for the economic objective because the ODE amplification factor 1/(gamma/T_s × (1-τ²)) is large near τ=1 (see LLMJOURNAL.md). This floors `dphidt_disc_eq` and `phi_time_cont_eq` residuals at ~10^-7 via machine precision, preventing true optimal IPOPT convergence. Current approach (IPOPT user-scaling) is under review — see journal for discussion. **Correct fix under investigation**: normalize `phi` in the model by dividing the terminal_cost ODE RHS by a reference value (e.g., `ss_obj_value * T_s / gamma`), storing `phi_ref` on the block, and multiplying back in the objective. This keeps phi O(1) without disabling IPOPT's gradient-based internal scaling.
+- **Resolved items** (fixed on `binary-distillation` or `fix/debug-tools-and-phi-continuity` branches):
+  - **phi[1] free variable bug** (`fix/debug-tools-and-phi-continuity`): Endpoint deletion loop in `_infinite_block_gen` previously deleted `phi_time_cont_eq[1]` and `phi_track_time_cont_eq[1]`, leaving `phi[1]` and `phi_track[1]` as free variables. Optimizer drove them to 0, disabling the infinite-horizon terminal cost entirely. Fixed by skipping `*_disc_eq` and `*_time_cont_eq` in the deletion loop.
+  - **`_report_acceptable_termination`** (`fix/debug-tools-and-phi-continuity`): New function in `debug_tools.py` detects and reports when IPOPT exits via the acceptable-level criterion (primary: checks solver message; fallback: checks constraint residuals > `_IPOPT_OPTIMAL_TOL = 5e-8`). Called from `Controller.solve()` when `debug_flag=True`. 15 tests in `tests/test_debug_tools.py`.
   - **"Restoration phase converged to small primal infeasibility" random failures**: `bound_relax_factor = 1e-8` added to warm solver; `acceptable_*` secondary safety net added; `_clip_to_bounds()` added in `run_MPC.py` after every solve to project out-of-bound values back to `[lb, ub]`; new `revive_run: int` option for automatic retry. See LLMJOURNAL.md for full history.
   - `plant.py:85-86`: unconditional `pprint` to `plant_model.txt` — now gated by `options.debug_flag`
   - **Infinite block (`_infinite_block_gen`)**: LAGRANGE-LEGENDRE t=0 and t=1 spurious constraint issue — **fixed** in `_infinite_block_gen` (mirrors the RADAU fix in `_finite_block_gen`; deletes entries at both endpoints after `equations_write`)

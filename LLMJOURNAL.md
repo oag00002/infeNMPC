@@ -1,5 +1,55 @@
 # Next Tasks
 
+## Debug Tools + Infinite-Horizon phi Continuity Fix (2026-05-01)
+
+**Branch:** `fix/debug-tools-and-phi-continuity`
+
+### Problem 1: No visibility into "acceptable" IPOPT exits
+
+The infinite-horizon controller was consistently exiting with "Solved To Acceptable Level" instead of "Optimal Solution Found", but the debug output only reported constraint violations at tol=1e-6 — too coarse to identify what specifically prevented true optimal convergence.
+
+**Fix:** Added `_report_acceptable_termination(model, results=None, label="")` to `debug_tools.py`:
+- Primary detection: checks `results.solver.message` for "acceptable" (case-insensitive)
+- Fallback: checks all active constraint residuals against `_IPOPT_OPTIMAL_TOL = 5e-8`
+- If detected, prints a `!!!` header and calls `_report_constraint_violations` with `tol=5e-8`
+- Returns `bool` (True = acceptable detected)
+- Called from `Controller.solve()` when `debug_flag=True` (replaces unconditional `_report_constraint_violations` on success)
+- `Controller.solve()` also stores `self.last_results` after every solve for external inspection
+- 15 tests in `tests/test_debug_tools.py`, all passing
+
+---
+
+### Problem 2: Infinite-horizon terminal cost silently disabled (Bug 1)
+
+**Symptom discovered via debug tools:** Running the ternary distillation example (`examples/lyap_flag_examples/enmpc_ternary_distillation/run.py`, 5 iterations, `debug_flag=True`, `tee_flag=True`) showed that `infinite_block.dphidt_disc_eq` was the top violating constraint in every solve, with `phi[1] ≈ 2.4e-7 ≈ 0` while `phi[0.962] ≈ 2.17e8`.
+
+**Root cause:** The endpoint deletion loop in `_infinite_block_gen` iterates over ALL constraints at t=0 and t=1. It deleted `phi_time_cont_eq[1]` and `phi_track_time_cont_eq[1]` — Pyomo's LAGRANGE-LEGENDRE continuity equations that pin `phi[1]` (and `phi_track[1]`) to the Lagrange polynomial extrapolated from the last element's GL points. With these deleted:
+- `phi[1]` had only a `NonNegativeReals` lower bound: it was a free variable
+- The optimizer drove `phi[1] → 0` to minimize the terminal cost `phi[1] * beta/T_s`
+- The infinite-horizon terminal cost was effectively zero: the controller was running as a finite-horizon controller
+
+**Evidence:** Post-solve pprint showed `phi_time_cont_eq : Size=2` (should be 3 for nfe=3 — entries at 1/3, 2/3, and 1.0). A minimal test confirmed `phi_time_cont_eq` has 3 entries before deletion and t=1 entry exists; the old loop removed it.
+
+**Fix:** Added `_dae_suffixes = ('_disc_eq', '_time_cont_eq')` guard to the endpoint deletion loop — the loop now `continue`s for any constraint ending with these suffixes (Pyomo DAE infrastructure), only deleting user-model constraint entries at the endpoints.
+
+---
+
+### Problem 3: phi values O(10^8) cause machine-precision floor in dphidt_disc_eq (Bug 2)
+
+**Still under investigation.** Even after Bug 1 is fixed, IPOPT will likely still exit acceptably because:
+
+The phi ODE amplification factor at the last GL point (τ ≈ 0.9624 for nfe=3, ncp=3) is `1/(gamma/T_s × (1-τ²)) ≈ 1/(0.0376 × 0.074) ≈ 360`. For an economic objective with cost deviation ≈ 3.2×10^6 from SS, `dphidt[0.962] ≈ 360 × 3.2e6 ≈ 1.15e9`, and `phi[0.962]` accumulates to ≈ 2.17×10^8.
+
+The `dphidt_disc_eq` (Lagrange derivative collocation equations) at each GL point involves Lagrange derivative coefficients O(18–30) multiplied by phi values O(10^8), giving body magnitudes O(3×10^9). Machine precision × O(3×10^9) ≈ 7×10^-7, above IPOPT's 1e-8 optimal tolerance. IPOPT cannot satisfy these constraints to true KKT optimality.
+
+The small gamma ≈ 0.0376 is the primary driver (not (1-τ²) alone). gamma = atanh(τ₁)/T_s where τ₁ ≈ 0.0376 is the first GL point of the first element with nfe=3 — much smaller than with nfe=1 (τ₁ ≈ 0.113, giving gamma ≈ 0.120). This is the combination of small (1-τ²) × small gamma that causes large phi.
+
+**Current attempted fix (under review):** Added Pyomo `scaling_factor` Suffix for phi[t] and dphidt[t] with `sf = 1/(ss_obj_value * T_s / gamma)`, plus `nlp_scaling_method = 'user-scaling'` in all IPOPT solver functions. **Concern:** `user-scaling` disables IPOPT's gradient-based internal scaling for ALL variables and constraints, potentially harming convergence for the rest of the model.
+
+**Recommended alternative:** Normalize phi in the model — divide the terminal_cost ODE RHS by `phi_ref` (stored on the block), and multiply by `phi_ref` in the objective. This keeps phi O(1-10) without touching IPOPT's scaling mechanism. Requires storing `m.phi_ref` and updating the objective term in controllers.py.
+
+---
+
 ## Solver Hardening + `revive_run` Flag (2026-04-29)
 
 **Branch:** `binary-distillation`
