@@ -127,7 +127,6 @@ def _ipopt_solver():
     solver = pyo.SolverFactory('ipopt_v2')
     solver.options['linear_solver'] = 'ma57'
     solver.options['OF_ma57_automatic_scaling'] = 'yes'
-    solver.options['nlp_scaling_method'] = 'user-scaling'
     solver.options['max_iter'] = 6000
     solver.options['halt_on_ampl_error'] = 'yes'
     solver.options['bound_relax_factor'] = 0
@@ -175,7 +174,6 @@ def _ipopt_warm_solver():
     # than being projected further into the interior at the start of each solve.
     solver.options['bound_push'] = 1e-8
     solver.options['bound_frac'] = 1e-8
-    solver.options['nlp_scaling_method'] = 'user-scaling'
     # bound_relax_factor = 0 (IPOPT default): enforce bounds exactly.  Relaxing
     # this to 1e-8 changes the barrier NLP enough that IPOPT exits via the
     # default acceptable_iter=15 criterion with inf_pr~4.8e-7 (equality residual),
@@ -203,7 +201,6 @@ def _ipopt_revive_solver():
     solver.options['bound_relax_factor'] = 1e-8
     solver.options['bound_push'] = 1e-8
     solver.options['bound_frac'] = 1e-8
-    solver.options['nlp_scaling_method'] = 'user-scaling'
     solver.options['tol'] = 1e-6
     return solver
 
@@ -901,21 +898,6 @@ def _infinite_block_gen(m, options):
         ]
         for _idx in _keys_to_del:
             del _con[_idx]
-
-    # Scaling: phi values grow to O(ss_obj_value * T_s / gamma) due to the
-    # vanishing (1-τ²) weight near τ=1.  Without explicit scaling the
-    # dphidt_disc_eq and phi_time_cont_eq bodies involve terms O(30 × phi),
-    # whose machine-precision floors (~10^-7 for phi~10^8) exceed IPOPT's
-    # optimal tolerance (1e-8), causing all solves to exit acceptably.
-    # Scaling phi and dphidt by 1/phi_ref moves these residuals to O(1e-14).
-    if options.objective == 'economic' and hasattr(m, 'ss_obj_value'):
-        _phi_ref = max(abs(float(pyo.value(m.ss_obj_value))) * options.sampling_time / gamma, 1.0)
-        m.scaling_factor = pyo.Suffix(direction=pyo.Suffix.EXPORT)
-        _sf = 1.0 / _phi_ref
-        for _t in m.time:
-            m.scaling_factor[m.phi[_t]] = _sf
-            if _t in m.dphidt:
-                m.scaling_factor[m.dphidt[_t]] = _sf
 
     # --- Terminal constraints for the infinite-horizon block ---
     #
