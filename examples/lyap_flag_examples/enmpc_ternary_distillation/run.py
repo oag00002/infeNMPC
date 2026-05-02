@@ -27,19 +27,20 @@ from infeNMPC import Options, mpc_loop  # noqa: E402
 options = Options.for_model_module(
     ternary_distillation_model,
     # ---- Simulation control ----
-    num_horizons=5,
+    num_horizons=200,
     sampling_time=1,
     # ---- Finite-horizon discretization ----
-    nfe_finite=2,
+    nfe_finite=25,
     ncp_finite=3,
     # ---- Infinite-horizon discretization ----
-    infinite_horizon=True,
+    infinite_horizon=False,
     nfe_infinite=3,
     ncp_infinite=3,
     # ---- Controller settings ----
     terminal_constraint_type='soft',
     terminal_soft_weight=1e4,   # rho in AMPL: penalises termeps
-    objective='economic',
+    objective='tracking',
+    tracking_setpoint='economic',
     terminal_cost_riemann=False,
     initialize_with_initial_data=False,
     initialization_assist=False,
@@ -61,7 +62,7 @@ options = Options.for_model_module(
     disturb_distribution='normal',
     disturb_seeded=True,
     # ---- Lyapunov stability constraint ----
-    lyap_flag=True,
+    lyap_flag=False,
     lyap_delta=0.9,
     lyap_constraint_type='soft',
     lyap_soft_weight=1e4,   # rho in AMPL: penalises desceps
@@ -69,6 +70,8 @@ options = Options.for_model_module(
     debug_flag=True,
     revive_run=1,
 )
+
+# Need to fix the sim_data recording to include all data now that algebraics are deleted
 
 if __name__ == '__main__':
     mpc_loop(options)

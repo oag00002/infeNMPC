@@ -201,6 +201,18 @@ class InfiniteHorizonController(Controller):
                         for sv_name in m.infinite_block.slack_index
                         for idx in getattr(m.infinite_block, sv_name).index_set()
                     )
+                if hasattr(m.finite_block, 'spec_slack_index') and options.slack_penalty_weight > 0:
+                    obj += options.slack_penalty_weight * sum(
+                        getattr(m.finite_block, sv_name)[idx]
+                        for sv_name in m.finite_block.spec_slack_index
+                        for idx in getattr(m.finite_block, sv_name).index_set()
+                    )
+                if hasattr(m.infinite_block, 'spec_slack_index') and options.slack_penalty_weight > 0:
+                    obj += options.slack_penalty_weight * sum(
+                        getattr(m.infinite_block, sv_name)[idx]
+                        for sv_name in m.infinite_block.spec_slack_index
+                        for idx in getattr(m.infinite_block, sv_name).index_set()
+                    )
                 return obj
 
         else:
@@ -260,6 +272,18 @@ class InfiniteHorizonController(Controller):
                     obj += options.slack_penalty_weight * sum(
                         getattr(m.infinite_block, sv_name)[idx]
                         for sv_name in m.infinite_block.slack_index
+                        for idx in getattr(m.infinite_block, sv_name).index_set()
+                    )
+                if hasattr(m.finite_block, 'spec_slack_index') and options.slack_penalty_weight > 0:
+                    obj += options.slack_penalty_weight * sum(
+                        getattr(m.finite_block, sv_name)[idx]
+                        for sv_name in m.finite_block.spec_slack_index
+                        for idx in getattr(m.finite_block, sv_name).index_set()
+                    )
+                if hasattr(m.infinite_block, 'spec_slack_index') and options.slack_penalty_weight > 0:
+                    obj += options.slack_penalty_weight * sum(
+                        getattr(m.infinite_block, sv_name)[idx]
+                        for sv_name in m.infinite_block.spec_slack_index
                         for idx in getattr(m.infinite_block, sv_name).index_set()
                     )
                 return obj
@@ -380,6 +404,12 @@ class FiniteHorizonController(Controller):
                     stage_cost += options.slack_penalty_weight * sum(
                         getattr(m, sv_name)[idx]
                         for sv_name in m.slack_index
+                        for idx in getattr(m, sv_name).index_set()
+                    )
+                if hasattr(m, 'spec_slack_index') and options.slack_penalty_weight > 0:
+                    stage_cost += options.slack_penalty_weight * sum(
+                        getattr(m, sv_name)[idx]
+                        for sv_name in m.spec_slack_index
                         for idx in getattr(m, sv_name).index_set()
                     )
                 return stage_cost
